@@ -304,7 +304,14 @@ test("the built bundle boots as a custom app and renders the overview", async ()
   const element = win.__render();
   const client = win.Spicetify.ReactDOM.createRoot(rootEl);
   client.render(element);
-  await new Promise(function (r) { setTimeout(r, 400); });
+  // Wait for the overview to actually paint instead of a fixed sleep: the
+  // controller loads from IndexedDB, and a fixed budget is flaky on slow CI
+  // runners. Poll for the wordmark and the route-load telemetry entry.
+  await waitFor(function () {
+    const html = rootEl.innerHTML;
+    const names = win.PWT.telemetry._entries().map(function (e) { return e.name; });
+    return html.indexOf("spotispy") >= 0 && names.indexOf("load.overview") >= 0 ? true : null;
+  }, "bundle overview render", 10000);
   const html = rootEl.innerHTML;
   assert.ok(html.length > 200, "app shell rendered");
   assert.ok(html.indexOf("spotispy") >= 0, "overview wordmark");
