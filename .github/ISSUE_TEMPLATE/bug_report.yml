@@ -1,0 +1,54 @@
+name: Bug report
+description: Something is not working as expected.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing issues first.
+        Do not use emojis.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: "When I open the Activity view, it stays blank instead of showing the feed."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps that reproduce the problem.
+      placeholder: |
+        1. Open Spotify with the extension loaded
+        2. Go to Spotispy > Activity
+        3. The view is blank
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics dump
+      description: |
+        Open Spotispy > Settings > Diagnostics, copy the report, and paste it here.
+        This is the fastest way to see what actually happened.
+      render: json
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Spotispy version
+      placeholder: "0.2.0"
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Spotify version, Spicetify version, OS.
+      placeholder: "Spotify 1.2.x, Spicetify 2.x, Windows 11"
+    validations:
+      required: false

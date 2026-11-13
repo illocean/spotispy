@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 64" width="320" height="64" role="img" aria-label="Spotispy">
+  <!-- Mark: eye + pulse, echoing docs/icon.svg -->
+  <rect x="4" y="8" width="48" height="48" rx="12" fill="#121212" stroke="#1ed760" stroke-opacity="0.35"/>
+  <path d="M12 32c4.5-7 11-10.5 16-10.5S39.5 25 44 32c-4.5 7-11 10.5-16 10.5S16.5 39 12 32Z"
+        fill="none" stroke="#ffffff" stroke-opacity="0.92" stroke-width="2"/>
+  <circle cx="28" cy="32" r="6.5" fill="#1ed760"/>
+  <circle cx="28" cy="32" r="2.5" fill="#121212"/>
+  <!-- Wordmark -->
+  <text x="66" y="42" font-family="'Segoe UI', system-ui, -apple-system, sans-serif"
+        font-size="30" font-weight="700" letter-spacing="-0.5" fill="#ffffff">Spotispy</text>
+</svg>

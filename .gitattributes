@@ -1,0 +1,16 @@
+# Normalize line endings on commit; check out with the platform's native endings.
+* text=auto
+
+# Explicit handling for files that must keep a specific line ending.
+*.ps1 text eol=crlf
+*.js  text eol=lf
+*.css text eol=lf
+*.md  text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+
+# Binary assets: never normalize.
+*.png binary
+*.jpg binary
+*.ico binary
+*.svg text eol=lf

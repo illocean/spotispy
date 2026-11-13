@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit + UI tests
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit suite
+        run: npm test
+
+      - name: UI suite (jsdom)
+        run: npm run test:ui
+
+  build:
+    name: Build bundles
+    runs-on: windows-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dist bundles
+        run: npm run build
+
+      - name: Confirm dist/ is gitignored (build output must not be committed)
+        shell: pwsh
+        run: |
+          $tracked = git ls-files dist
+          if ($tracked) { Write-Error "dist/ is tracked in git but must be ignored: $tracked"; exit 1 }
+          Write-Host "dist/ is not tracked (correct)."

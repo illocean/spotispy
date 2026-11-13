@@ -1,0 +1,667 @@
+"use strict";
+/**
+ * Spotispy — regression suite for logical defects found by audit.
+ *
+ * Every test here corresponds to a concrete defect: it fails against the
+ * pre-fix code and passes once the defect is fixed. Each is a specification of
+ * the intended behaviour, not of the current behaviour.
+ *
+ *   npm test
+ */
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const path = require("path");
+
+const { boot, stubSpicetify, fixtures, stubHandlers } = require("./support/harness.js");
+
+const diff = require("../src/pwt/diff.js");
+const events = require("../src/pwt/events.js");
+const sources = require("../src/pwt/core/sources.js");
+
+globalThis.PWT_ART_DISABLED = true;
+
+function freshBoot() {
+  const { win, P } = boot();
+  const calls = { toasts: [], nav: [], get: [], post: [], handlers: [] };
+  stubSpicetify(win, calls);
+  return { win, P, calls };
+}
+
+/**
+ * Wipe the activity/change stores before a test that writes rows. The harness
+ * and the source modules share one fake-indexeddb across this file, so a test
+ * must not inherit another test's plays/changes or a read looks filtered when
+ * it is not.
+ */
+async function clean(P) {
+  await P.net.reset();
+  if (P.activity && P.activity.reset) P.activity.reset();
+  await P.db.purgeAll();
+}
+
+// ---------------------------------------------------------------------------
+// 1. diffTracks: duplicates removed one key per copy (strict multiset)
+// ---------------------------------------------------------------------------
+
+test("diffTracks: removing one of two duplicate copies emits one removal per copy", () => {
+  // prev has two copies of "a"; next has one. One copy was removed.
+  const r = diff.diffTracks(["a", "a"], ["a"]);
+  assert.deepEqual(r.added, []);
+  assert.equal(r.removed.length, 1, "one copy removed => exactly one removal key");
+});
+
+test("diffTracks: removing all duplicate copies emits one removal per copy", () => {
+  // prev has three copies of "a"; next has none. Three copies were removed.
+  const r = diff.diffTracks(["a", "a", "a"], []);
+  assert.equal(r.removed.length, 3, "three copies removed => three removal keys, not one");
+});
+
+test("diffTracks: adding duplicate copies emits one addition per copy", () => {
+  const r = diff.diffTracks(["a"], ["a", "a", "a"]);
+  assert.equal(r.added.length, 2, "two extra copies added => two addition keys, not one");
+});
+
+test("diffTracks: mixed multiset counts both sides per copy", () => {
+  // prev: a x2, b x1 ; next: a x1, b x3, c x1
+  const r = diff.diffTracks(["a", "a", "b"], ["a", "b", "b", "b", "c"]);
+  assert.equal(r.removed.length, 1, "one 'a' removed");
+  assert.deepEqual(r.removed, ["a"]);
+  assert.equal(r.added.length, 3, "two 'b' + one 'c' added");
+  assert.deepEqual(r.added.slice().sort(), ["b", "b", "c"]);
+});
+
+// ---------------------------------------------------------------------------
+// 2. playlist.meta.changed is a playlist-level kind
+// ---------------------------------------------------------------------------
+
+test("playlist.meta.changed is a registered playlist kind", () => {
+  assert.equal(events.levelOf("playlist.meta.changed"), "playlist");
+});
+
+test("playlist.meta.changed aggregates into the playlist bucket, not profile", () => {
+  assert.equal(events.aggregateLevel("playlist.meta.changed"), "playlist");
+});
+
+test("playlist.item.added still aggregates as playlist / added", () => {
+  assert.equal(events.aggregateLevel("playlist.item.added"), "playlist");
+  assert.equal(events.aggregateField("playlist.item.added"), "added");
+});
+
+// ---------------------------------------------------------------------------
+// 13. embed.parse: total counts the list actually used
+// ---------------------------------------------------------------------------
+
+test("embed.parse: total reflects trackListFull when trackList is absent", () => {
+  const html =
+    '<script id="__NEXT_DATA__" type="application/json">' +
+    JSON.stringify({
+      props: {
+        pageProps: {
+          state: {
+            data: {
+              entity: {
+                name: "Only Full",
+                trackListFull: [{ uri: "spotify:track:a" }, { uri: "spotify:track:b" }],
+              },
+            },
+          },
+        },
+      },
+    }) +
+    "</script>";
+  const parsed = sources.SOURCES.embed.parse(html);
+  assert.ok(parsed, "the embed payload parses");
+  assert.equal(parsed.uris.length, 2, "two URIs read from trackListFull");
+  assert.equal(parsed.total, 2, "total counts the list actually used (trackListFull), not the absent trackList");
+});
+
+// ---------------------------------------------------------------------------
+// 3. fetchContents: API pagination advances by returned item count
+// ---------------------------------------------------------------------------
+
+test("fetchContents: paginated Web API with non-track items yields unique URIs and is not capped", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const PAGE = 100;
+    // 150 items total; every 50th item is an episode (filtered out by parse).
+    const items = [];
+    for (let i = 0; i < 150; i++) {
+      if (i % 50 === 50 - 1) {
+        items.push({ track: { uri: "spotify:episode:e" + i } });
+      } else {
+        items.push({ track: { uri: "spotify:track:" + String(i).padStart(22, "0") } });
+      }
+    }
+    calls.handlers.length = 0;
+    calls.handlers.push({
+      test: function (u) { return /api\.spotify\.com\/v1\/playlists\/.*\/tracks/.test(u); },
+      value: function (u) {
+        const offset = Number(/offset=(\d+)/.exec(u)[1]);
+        return { items: items.slice(offset, offset + PAGE), total: items.length };
+      },
+    });
+
+    const res = await P.playlists.fetchContents("37i9dQZF1DXcBWIGoYBM5M");
+    assert.equal(res.source, "api");
+    const uris = res.uris;
+    assert.equal(new Set(uris).size, uris.length, "no duplicate URIs across pages: " + JSON.stringify(uris.slice(0, 5)));
+    // 150 items, 3 episodes filtered => 147 tracks.
+    assert.equal(uris.length, 147, "every track item is fetched exactly once (147)");
+    assert.equal(res.capped, false, "a fully-paged read is not capped");
+    void win;
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 4. fetchContents: pathfinder metadata-only answer is not a successful empty read
+// ---------------------------------------------------------------------------
+
+test("fetchContents: a metadata-only pathfinder answer throws instead of an empty success", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    calls.handlers.length = 0;
+    // Web API and embed both fail; pathfinder answers metadata with no content.
+    calls.handlers.push({
+      test: function (u) { return /api\.spotify\.com\/v1\/playlists\/.*\/tracks/.test(u); },
+      value: { code: 429, message: "rate limited" },
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/embed/playlist/") >= 0; },
+      value: "<html>no data</html>",
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/pathfinder/v2/query") >= 0; },
+      value: function (u, body) {
+        if (body && body.operationName === "fetchPlaylistMetadata") {
+          return { data: { playlistV2: { name: "Ghost", content: null } } };
+        }
+        return { data: { playlistV2: { content: { totalCount: 3, items: [] } } } };
+      },
+    });
+    // core resolver is unreachable, so the chain ends at pathfinder.
+    calls.handlers.push({
+      test: function (u) { return /core-playlist\/v1\/playlist\/.*\/rows/.test(u); },
+      value: { code: -1, message: "Resolver not found!" },
+    });
+
+    await assert.rejects(
+      function () { return P.playlists.fetchContents("37i9dQZF1DXcBWIGoYBM5M"); },
+      "a metadata-only pathfinder answer must not resolve as a 0-track playlist"
+    );
+    void win;
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 5. scanPlaylists: a held (unconfirmed shrink) reports nothing as written
+// ---------------------------------------------------------------------------
+
+test("scanPlaylists: a held shrink reports nothing as written, and counts as held", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    // A playlist id no other test file uses, so a shared-process leftover
+    // snapshot cannot seed or mask this scan.
+    const PID = "zzHoldTestPlaylist000000001";
+    stubHandlers(fx, calls);
+    let read = 0;
+    const full = [];
+    for (let i = 0; i < 100; i++) full.push({ track: { uri: "spotify:track:" + String(i).padStart(22, "0") }, added_at: new Date(Date.now() - 86400000).toISOString() });
+    const shrunk = [
+      { track: { uri: "spotify:track:new1" + "0".repeat(15) }, added_at: new Date().toISOString() },
+      { track: { uri: "spotify:track:new2" + "0".repeat(15) }, added_at: new Date().toISOString() },
+    ];
+    // Drop every api-tracks handler left by earlier tests in this process:
+    // stubSpicetify dispatches to the FIRST matching handler, so a stale handler
+    // would answer before this one. Identify them by probing each handler's own
+    // predicate against a real api-tracks URL (its boolean answer is what says
+    // "this handler serves api tracks"), not by the URL itself.
+    var API_TRACKS_URL = "https://api.spotify.com/v1/playlists/probe/tracks";
+    calls.handlers = calls.handlers.filter(function (h) {
+      var servesApiTracks = false;
+      try {
+        servesApiTracks = h.test(API_TRACKS_URL) === true;
+      } catch (e) {
+        servesApiTracks = false;
+      }
+      return !servesApiTracks;
+    });
+    calls.handlers.push({
+      test: function (u) { return /api\.spotify\.com\/v1\/playlists\/.*\/tracks/.test(u); },
+      value: function () {
+        read++;
+        return { items: read === 1 ? full : shrunk, total: read === 1 ? 100 : shrunk.length };
+      },
+    });
+
+    await P.net.reset();
+    await P.store.putWatch({ kind: "playlist", id: PID });
+
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    // Scan 1 seeds the 100-track baseline.
+    await P.playlists.scanPlaylists(deps, { force: true });
+    const seeded = await P.db.get("snapshots", PID);
+    assert.ok(seeded && seeded.uris.length === 100, "the first scan stored a 100-track baseline: " + (seeded && seeded.uris.length));
+    assert.equal(seeded.source, "api", "the baseline came from the Web API");
+
+    // Scan 2 sees a suspicious shrink (100 -> 2) and must hold it.
+    const second = await P.playlists.scanPlaylists(deps, { force: true });
+    assert.equal(second.totals.held, 1, "the shrink is held, not applied: " + JSON.stringify(second.totals));
+    // The contract: a held shrink writes no events, so no additions may be
+    // reported and edits may never go negative for changes never written.
+    assert.equal(second.totals.added, 0, "a held shrink reports no additions: " + JSON.stringify(second.totals));
+    assert.equal(second.totals.removed, 0, "a held shrink reports no removals: " + JSON.stringify(second.totals));
+    assert.ok(second.totals.edits >= 0, "edits never goes negative for changes that were not written: " + JSON.stringify(second.totals));
+    assert.equal(second.results[0].added, 0, "the per-playlist result reports no additions either");
+  } finally {
+    P.net.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 6. activity tick: a cached avatar is not clobbered with an empty string
+// ---------------------------------------------------------------------------
+
+test("activity tick: a cached avatar survives a feed record that has none", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = "aaaaaaaaaaaaaaaaaaaaaa";
+    const CACHED = "https://img.example/ari.jpg";
+    await P.store.setMeta("activityName:" + USER, { name: "Ari", avatar: CACHED, uri: "spotify:user:" + USER });
+    // Feed record carries no avatar this tick.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+      value: function () {
+        return {
+          entities: [
+            {
+              userEntity: {
+                uri: "spotify:user:" + USER,
+                name: "Ari",
+                activity: {
+                  entityUri: fx.tracks[0].uri,
+                  timestamp: new Date().toISOString(),
+                  isPlaying: true,
+                  contextUri: "",
+                },
+              },
+            },
+          ],
+        };
+      },
+    });
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    await P.activity.tick(deps, { force: true });
+    const after = await P.store.getMeta("activityName:" + USER, null);
+    assert.ok(after, "the cache row still exists");
+    assert.equal(after.avatar, CACHED, "an avatar resolved earlier is not destroyed by an avatar-less feed record");
+    void win;
+  } finally {
+    P.net.reset();
+    P.activity.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 7. activity tick: the per-profile Watch activity flag is honoured for online friends
+// ---------------------------------------------------------------------------
+
+test("activity tick: a profile with watchActivity=false records no plays while online", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = "aaaaaaaaaaaaaaaaaaaaaa";
+    await P.db.put("profiles", { id: USER, name: "Ari", watchActivity: false });
+
+    const before = (await P.store.playsFor(null, 0, 5000)) || [];
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    const res = await P.activity.tick(deps, { force: true });
+    const after = (await P.store.playsFor(null, 0, 5000)) || [];
+    assert.equal(res.plays, 0, "no play is produced for an unwatched person");
+    assert.equal(after.length, before.length, "nothing new written to the plays store");
+    void win;
+  } finally {
+    P.net.reset();
+    P.activity.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 10c. recentChanges: filters apply before the limit on the no-target path
+// ---------------------------------------------------------------------------
+
+test("recentChanges: a kind filter is applied before the limit (no rows lost behind newer other-kind rows)", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    var changes = [];
+    // 5 newer rows of another kind, then 3 older rows of the wanted kind. Each
+    // carries a distinct uri: rowKey() collapses same-level/target/kind/uri/day
+    // rows into one logical change, so identical rows would be deduped.
+    for (var i = 0; i < 5; i++) {
+      changes.push({ level: "playlist", target: "plK", kind: "playlist.item.removed", title: "other" + i, detail: "", ts: now - 1000 - i, observedAt: now - 1000 - i, uri: "spotify:track:other" + i });
+    }
+    for (var j = 0; j < 3; j++) {
+      changes.push({ level: "playlist", target: "plK", kind: "playlist.item.added", title: "wanted" + j, detail: "", ts: now - 10000 - j, observedAt: now - 10000 - j, uri: "spotify:track:wanted" + j });
+    }
+    await P.store.commitScan({ changes: changes });
+
+    const added = await P.store.recentChanges(3, null, "playlist.item.added");
+    assert.equal(added.length, 3, "the limit applies to the wanted kind, not to the raw row count: " + added.length);
+    assert.ok(added.every(function (r) { return r.kind === "playlist.item.added"; }), "only the wanted kind");
+    assert.equal(added[0].title, "wanted0", "newest of the wanted kind first");
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 7b. an unwatched friend is not counted as an absence (no phantom missed/hidden)
+// ---------------------------------------------------------------------------
+
+test("activity tick: an unwatched online friend accrues no missed ticks and no hidden transition", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = "aaaaaaaaaaaaaaaaaaaaaa";
+    // A stored state row, as if the friend had been watched before being turned
+    // off — this is the case that used to accrue a phantom miss every tick.
+    await P.db.put("activityState", Object.assign({ userId: USER }, P.session.snapshot(P.session.restore(null))));
+    await P.db.put("profiles", { id: USER, name: "Ari", watchActivity: false });
+
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    for (let n = 0; n < 3; n++) {
+      const res = await P.activity.tick(deps, { force: true });
+      assert.equal(res.hidden || 0, 0, "an unwatched friend never reports 'hidden' (tick " + n + ")");
+      assert.equal((res.transitions || []).filter(function (t) { return t.kind === "activity.hidden"; }).length, 0, "no phantom hidden transition");
+    }
+    const st = await P.db.get("activityState", USER);
+    assert.ok(st, "the stored state row still exists");
+    assert.ok((st.missed || 0) === 0, "an unwatched friend accrues no missed ticks: " + st.missed);
+  } finally {
+    P.net.reset();
+    P.activity.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 10b. recentChanges: the bucket filter is applied before toRow strips it
+// ---------------------------------------------------------------------------
+
+test("recentChanges: a bucket filter is honoured (bucket is read before it is stripped)", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    await P.store.commitScan({ changes: [{ level: "playlist", target: "plB", kind: "playlist.item.added", title: "b", detail: "", ts: now, observedAt: now }] });
+    // Every logged row is bucket "log"; a filter for that bucket must return it.
+    const logged = await P.store.recentChanges(50, null, null, "log");
+    assert.ok(logged.length >= 1, "the 'log' bucket filter returns the logged rows");
+    assert.ok(logged.every(function (r) { return r.title === "b"; }), "only the logged row");
+    const none = await P.store.recentChanges(50, null, null, "day");
+    assert.equal(none.length, 0, "an unknown bucket returns nothing");
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 9. profile scan totals: edits excludes playlist added/removed
+// ---------------------------------------------------------------------------
+
+test("profile scan: edits counts only scalar changes, not playlist additions", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = "aaaaaaaaaaaaaaaaaaaaaa";
+    await P.store.putWatch({ kind: "profile", id: USER });
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+
+    // First scan seeds the profile (2 playlists, no priors) — not a failure.
+    const first = await P.profiles.scanProfiles(deps, { force: true });
+    assert.equal(first.totals.failed || 0, 0, "the first profile scan seeds cleanly");
+    const seedEdits = first.totals.edits;
+    const seedAdded = first.totals.added;
+
+    // Second scan: nothing changes, so every counter must be zero. Before the
+    // fix, `edits` re-counts the still-present playlist additions every scan.
+    const second = await P.profiles.scanProfiles(deps, { force: true });
+    assert.equal(second.totals.added, 0, "no new playlist on the second scan: " + JSON.stringify(second.totals));
+    assert.equal(second.totals.edits, 0, "an unchanged profile records no edits: " + JSON.stringify(second.totals));
+
+    // And on a scan that does add a playlist, edits must not include it.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/user-profile-view/v3/profile/x") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/user-profile-view/v3/profile/") >= 0 && u.indexOf("/followers") < 0 && u.indexOf("/following") < 0; },
+      value: function () {
+        return {
+          uri: "spotify:user:" + USER,
+          name: "Ari",
+          image: fx.art.avatarUser,
+          followers_count: 128,
+          public_playlists: [
+            { uri: "spotify:playlist:" + fx.playlistId, name: "Night Drive", images: [{ url: fx.art.cover }] },
+            { uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM6M", name: "Day Drive", images: [{ url: fx.art.art1 }] },
+            { uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM9X", name: "New Mix", images: [] },
+          ],
+        };
+      },
+    });
+    const third = await P.profiles.scanProfiles(deps, { force: true });
+    assert.equal(third.totals.added, 1, "exactly one playlist added");
+    assert.equal(third.totals.edits, 0, "the playlist addition is counted as added, never also as an edit: " + JSON.stringify(third.totals));
+    assert.ok(seedEdits >= 0 && seedAdded >= 0, "seed scan produced sane counts");
+    void win;
+  } finally {
+    P.net.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 10. profile scan marks a notfound profile negative
+// ---------------------------------------------------------------------------
+
+test("profile scan: a transport-failure body is reported unreachable, never a 429", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const USER = "cccccccccccccccccccccc";
+    await P.store.putWatch({ kind: "profile", id: USER });
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/user-profile-view/v3/profile/x") === false;
+    });
+    // The live client's unreachable shape: a resolved body with a bogus 429 code
+    // and the renderer's transport-failure message.
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/user-profile-view/v3/profile/") >= 0 && u.indexOf("/followers") < 0 && u.indexOf("/following") < 0; },
+      value: { code: 429, message: "Failed to fetch" },
+    });
+    // The followers/following routes are irrelevant to the profile scan itself.
+    calls.handlers.push({ test: function (u) { return u.indexOf("/followers") >= 0; }, value: { profiles: [] } });
+    calls.handlers.push({ test: function (u) { return u.indexOf("/following") >= 0; }, value: { profiles: [] } });
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    await P.profiles.scanProfiles(deps, { force: true });
+    const row = await P.db.get("profiles", USER);
+    assert.ok(row && row.lastError, "the failure is recorded");
+    assert.ok(!/429/.test(row.lastError), "no fabricated 429 in the profile error: " + row.lastError);
+    assert.ok(/unreachable|failed to fetch/i.test(row.lastError), "the profile error says unreachable: " + row.lastError);
+    assert.equal(P.net.isNegative("profile:" + USER), false, "a transport failure must not be marked as a permanent notfound");
+  } finally {
+    P.net.reset();
+    P.db.close();
+  }
+});
+
+test("profile scan: a 404 profile backs off via the negative cache", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const USER = "bbbbbbbbbbbbbbbbbbbbbb";
+    await P.store.putWatch({ kind: "profile", id: USER });
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/user-profile-view/v3/profile/x") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/user-profile-view/v3/profile/") >= 0 && u.indexOf("/followers") < 0 && u.indexOf("/following") < 0; },
+      value: { code: -1, message: "Resolver not found!" },
+    });
+    const deps = { net: P.net, db: P.db, store: P.store, config: P.config };
+    await P.profiles.scanProfiles(deps, { force: true });
+    assert.equal(P.net.isNegative("profile:" + USER), true, "a resolver-not-found profile is marked negative");
+
+    // A non-forced scan skips it; a forced scan still tries.
+    let attempted = 0;
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/user-profile-view/v3/profile/x") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/user-profile-view/v3/profile/") >= 0 && u.indexOf("/followers") < 0 && u.indexOf("/following") < 0; },
+      value: function () {
+        attempted++;
+        return { code: -1, message: "Resolver not found!" };
+      },
+    });
+    await P.profiles.scanProfiles(deps, {});
+    assert.equal(attempted, 0, "a backed-off profile is not requested again without force");
+    void win;
+  } finally {
+    P.net.reset();
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 11. recentChanges(limit, target) returns the newest rows, not the oldest
+// ---------------------------------------------------------------------------
+
+test("recentChanges: with a target it still returns rows newest-first and honours the limit after filtering", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const rows = [
+      { level: "playlist", target: "pl1", kind: "playlist.item.added", title: "old", detail: "", ts: now - 9000, observedAt: now - 9000, uri: "spotify:track:old" },
+      { level: "playlist", target: "pl1", kind: "playlist.item.added", title: "new", detail: "", ts: now - 1000, observedAt: now - 1000, uri: "spotify:track:new" },
+      { level: "playlist", target: "other", kind: "playlist.item.added", title: "other", detail: "", ts: now - 500, observedAt: now - 500, uri: "spotify:track:other" },
+    ];
+    await P.store.commitScan({ changes: rows });
+
+    const forPl1 = await P.store.recentChanges(1, "pl1");
+    assert.equal(forPl1.length, 1, "the limit applies to the target's rows, not the whole log");
+    assert.equal(forPl1[0].title, "new", "the newest row for that target wins, not the oldest");
+
+    const all = await P.store.recentChanges(10);
+    assert.equal(all[0].title, "other", "without a target the log is still newest-first");
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. playsFor filters by user
+// ---------------------------------------------------------------------------
+
+test("playsFor: only returns plays belonging to the given user", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    await P.store.addPlays([
+      { userId: "u1", ts: 1000, trackUri: "spotify:track:a", durationMs: 1000 },
+      { userId: "u1", ts: 2000, trackUri: "spotify:track:b", durationMs: 1000 },
+      { userId: "u2", ts: 1500, trackUri: "spotify:track:c", durationMs: 1000 },
+    ]);
+    const u1 = await P.store.playsFor("u1", 0, 500);
+    assert.equal(u1.length, 2, "only u1's plays: " + JSON.stringify(u1.map((p) => p.trackUri)));
+    assert.ok(u1.every(function (p) { return p.userId === "u1"; }), "no other user's play leaks through");
+    assert.equal(u1[0].ts, 2000, "newest first");
+
+    const all = await P.store.playsFor(null, 0, 500);
+    assert.equal(all.length, 3, "a null user still returns every play (existing caller)");
+  } finally {
+    P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 8. scheduler re-arms the activity back-off when it is in an error state
+// ---------------------------------------------------------------------------
+
+test("scheduler: after activity failures, reschedule() re-arms the activity timer at the back-off", async () => {
+  const { win, P, calls } = freshBoot();
+  const realSetInterval = global.setInterval;
+  const realClearInterval = global.clearInterval;
+  const intervals = [];
+  try {
+    await clean(P);
+    // A calendar that only ever reports "now", so any recorded delay is exact.
+    const realNow = Date.now;
+    Date.now = function () { return 1000000; };
+    try {
+      global.setInterval = function (fn, ms) {
+        intervals.push(ms);
+        return { _ms: ms, fake: true };
+      };
+      global.clearInterval = function () {};
+
+      // Every request fails: the activity tick will throw and accrue an error.
+      calls.handlers.length = 0;
+      calls.handlers.push({
+        test: function () { return true; },
+        value: function () { throw new TypeError("Failed to fetch"); },
+      });
+
+      const sched = P.scheduler.create({
+        store: P.store,
+        db: P.db,
+        config: P.config,
+      });
+      await sched.activityTick();
+      assert.equal(sched._state().activityErrors, 1, "the failing tick accrued an error");
+
+      sched.reschedule();
+      const activityIntervals = intervals.filter(function (m) { return m !== 3600000; });
+      assert.ok(activityIntervals.length >= 1, "the activity timer is armed: " + JSON.stringify(intervals));
+      assert.ok(
+        activityIntervals[activityIntervals.length - 1] >= 180000,
+        "after an activity failure the timer is re-armed at the 180s back-off, not 60s: " + JSON.stringify(intervals)
+      );
+      await sched.stop();
+    } finally {
+      Date.now = realNow;
+    }
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    P.db.close();
+    void win;
+  }
+});
+
+void path;

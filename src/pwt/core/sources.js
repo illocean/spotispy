@@ -1,0 +1,426 @@
+/* eslint-disable */
+/**
+ * Spotispy â€” every endpoint in one place (proposal Â§7.1).
+ *
+ * Request shapes are the ones recorded in the proposal (Â§3, Â§3A, Â§3B) and
+ * re-implemented from the reference implementations' *behaviour*, never copied.
+ * When Spotify breaks a route, fix it here.
+ *
+ * Protocols
+ *  - "sp"    : Spicetify internal protocol, handled by CosmosAsync.
+ *  - "https" : a real host; sent through CosmosAsync so the client's session
+ *              headers/token are attached automatically (no cookie or token we
+ *              extract or persist ourselves).
+ */
+(function (root, factory) {
+  var api = factory();
+  if (typeof module === "object" && module.exports) module.exports = api;
+  root.PWT = root.PWT || {};
+  root.PWT.sources = api;
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var SPCLIENT = "https://spclient.wg.spotify.com";
+  var PARTNER = "https://api-partner.spotify.com";
+  var API = "https://api.spotify.com/v1";
+  var PUBLIC = "https://open.spotify.com";
+
+  function q(v) {
+    return encodeURIComponent(v);
+  }
+
+  /**
+   * Public open.spotify.com playlist JSON, the no-session fallback. `decoded`
+   * marks sources that return parsed data instead of raw CosmosAsync output.
+   * `caps` records whether the source truncates long playlists.
+   */
+  var SOURCES = {
+    // ---------------------------------------------------------- playlists
+    // ------------------------- general-purpose Web API (works via Cosmos) --------------------------
+    /**
+     * Web API playlist â€” the most reliable public-playlist route on current
+     * builds. Melior uses the same `api.spotify.com` host through Cosmos.
+     */
+    apiPlaylistTracks: {
+      id: "apiTracks",
+      label: "Web API playlist tracks",
+      caps: false,
+      sessionOnly: true,
+      fn: function (id, opts) {
+        opts = opts || {};
+        var offset = opts.offset || 0;
+        return {
+          method: "get",
+          url:
+            API +
+            "/playlists/" + q(id) + "/tracks?limit=100&offset=" + offset + "&market=from_token",
+        };
+      },
+      /** @returns {{uris: string[], added: object, total: number|null, next: string|null}} */
+      parse: function (res) {
+        var items = (res && (res.items || null)) || [];
+        var uris = [];
+        var added = {};
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i] || {};
+          var tr = it.track || {};
+          var uri = tr.uri;
+          if (!uri || String(uri).indexOf("spotify:track:") !== 0) continue;
+          uris.push(uri);
+          var addedAt = it.added_at ? Date.parse(it.added_at) : null;
+          var addedBy =
+            (it.added_by && (it.added_by.id || (it.added_by.uri || "").replace(/^spotify:user:/, ""))) || "";
+          if (addedAt != null || addedBy) {
+            added[uri] = { addedAt: addedAt, addedBy: String(addedBy) };
+          }
+        }
+        return { uris: uris, added: added, total: res && res.total != null ? res.total : null, raw: res };
+      },
+    },
+    coreRows: {
+      id: "core",
+      label: "Client playlist rows",
+      caps: false,
+      fn: function (id) {
+        return {
+          method: "get",
+          url: "wg://core-playlist/v1/playlist/spotify:playlist:" + q(id) + "/rows",
+          body: { policy: { link: true } },
+        };
+      },
+      /** @returns {{uris: string[], added: object}} */
+      parse: function (res) {
+        var rows = (res && (res.rows || res.items)) || [];
+        var uris = [];
+        var added = {};
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          var uri = r.uri || (r.item && r.item.uri);
+          if (!uri || String(uri).indexOf("spotify:track:") !== 0) continue;
+          uris.push(uri);
+          var addAt = r.addedAt || (r.added_at != null ? r.added_at : null);
+          var addBy = r.addedBy || r.added_by || (r.addedByUri != null ? r.addedByUri : null);
+          if (addAt != null || addBy != null) {
+            added[uri] = {
+              addedAt: typeof addAt === "string" ? Date.parse(addAt) : addAt,
+              addedBy: addBy ? String(addBy).replace(/^spotify:user:/, "") : "",
+            };
+          }
+        }
+        return { uris: uris, added: added, total: res && (res.total != null ? res.total : uris.length), raw: res };
+      },
+    },
+    coreMeta: {
+      id: "coreMeta",
+      label: "Client playlist metadata",
+      fn: function (id) {
+        return { method: "get", url: "wg://core-playlist/v1/playlist/spotify:playlist:" + q(id) + "/metadata" };
+      },
+      /** @returns {{name, coverUrl, coverHash, description, owner, followers, descriptionHash}} */
+      parse: function (res) {
+        var r = res || {};
+        var cover = r.image || r.picture || r.cover || (r.images && r.images[0] && r.images[0].url) || "";
+        return {
+          name: r.name || "",
+          description: r.description || "",
+          owner: (r.owner && (r.owner.username || r.owner.id || r.owner.uri)) || r.ownerId || "",
+          followers: r.followers != null ? r.followers : null,
+          coverUrl: cover,
+          coverHash: cover ? String(cover).split("/").pop().split("?")[0] : "",
+          raw: r,
+        };
+      },
+    },
+    apiPlaylist: {
+      id: "api",
+      label: "Web API playlist",
+      caps: false,
+      sessionOnly: true,
+      fn: function (id) {
+        return { method: "get", url: API + "/playlists/" + q(id) + "?market=from_token" };
+      },
+      parse: function (res) {
+        var r = res || {};
+        return {
+          name: r.name || "",
+          description: r.description || "",
+          owner: (r.owner && (r.owner.id || r.owner.uri)) || "",
+          followers: r.followers && r.followers.total != null ? r.followers.total : null,
+          coverUrl: (r.images && r.images[0] && r.images[0].url) || "",
+          coverHash:
+            ((r.images && r.images[0] && String(r.images[0].url).split("/").pop().split("?")[0]) || "") + "|" + (r.snapshot_id || ""),
+          devApi: true,
+          raw: r,
+        };
+      },
+    },
+    embed: {
+      id: "embed",
+      label: "Public embed JSON",
+      caps: true,
+      fn: function (id) {
+        return { method: "fetch", url: PUBLIC + "/embed/playlist/" + q(id), format: "text" };
+      },
+      /** Parse the embedded __NEXT_DATA__ JSON. Returns null when absent. */
+      parse: function (html) {
+        var text = html && (html.html || html.body || html);
+        if (typeof text !== "string") text = String(text || "");
+        var m = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(text);
+        if (!m) return null;
+        var data;
+        try {
+          data = JSON.parse(m[1]);
+        } catch (e) {
+          return null;
+        }
+        var entity = data && data.props && data.props.pageProps && data.props.pageProps.state && data.props.pageProps.state.data
+          ? data.props.pageProps.state.data.entity
+          : null;
+        if (!entity) return null;
+        var list = entity.trackList || entity.trackListFull || [];
+        var uris = [];
+        var added = {};
+        for (var i = 0; i < list.length; i++) {
+          var t = list[i] || {};
+          var uri = t.uri || (t.id ? "spotify:track:" + t.id : "");
+          if (!uri) continue;
+          uris.push(uri);
+          added[uri] = { addedAt: null, addedBy: "" };
+        }
+        return {
+          name: entity.name || entity.title || "",
+          owner: (entity.subtitle || "").replace(/^By\s+/i, ""),
+          coverUrl: entity.coverArt && entity.coverArt.sources ? ((entity.coverArt.sources.slice(-1)[0] || {}).url || "") : "",
+          uris: uris,
+          added: added,
+          total: list.length,
+          capped: true,
+        };
+      },
+    },
+    pathfinder: {
+      id: "pathfinder",
+      label: "Public web-player GraphQL",
+      caps: false,
+      // ONE hash covers fetchPlaylist/fetchPlaylistMetadata/fetchPlaylistContents;
+      // the server picks the operation by name (verified in the 2026 web-player bundle).
+      hash: "21ea11a6ac75a5f3e01fd365d29c18e0a4a8b7dc09f89bbb5d73910190c6acaf",
+      pageSize: 100,
+      fn: function (id, opts) {
+        opts = opts || {};
+        var vars = {
+          enableWatchFeedEntrypoint: false,
+          uri: "spotify:playlist:" + id,
+        };
+        if (opts.offset != null) {
+          vars = {
+            includeEpisodeContentRatingsV2: false,
+            limit: opts.limit || 100,
+            offset: opts.offset,
+            uri: "spotify:playlist:" + id,
+          };
+        }
+        var opName = opts.offset != null ? "fetchPlaylistContents" : "fetchPlaylistMetadata";
+        // Use the client's own persisted-query definition when it ships one:
+        // these hashes rotate and the hardcoded value goes stale (401).
+        var liveHash = SOURCES.pathfinder.hash;
+        try {
+          var S = (typeof globalThis !== "undefined" ? globalThis : window).Spicetify;
+          var defs = S && S.GraphQL && S.GraphQL.Definitions;
+          var def = defs && (defs[opName] || defs[opName.charAt(0).toUpperCase() + opName.slice(1)]);
+          if (def && def.sha256Hash) liveHash = def.sha256Hash;
+        } catch (e) {
+          /* keep the bundled hash */
+        }
+        return {
+          method: "post",
+          url: PARTNER + "/pathfinder/v2/query",
+          body: {
+            variables: vars,
+            operationName: opName,
+            extensions: { persistedQuery: { version: 1, sha256Hash: liveHash } },
+          },
+        };
+      },
+      parseMetadata: function (res) {
+        var p = res && res.data && res.data.playlistV2;
+        if (!p) return null;
+        return {
+          name: p.name || "",
+          owner: (p.ownerV2 && (p.ownerV2.data && (p.ownerV2.data.username || p.ownerV2.data.uri))) || "",
+          coverUrl: p.images && p.images.items && p.images.items[0] ? p.images.items[0].sources.slice(-1)[0].url : "",
+          description: p.description || "",
+          revisionId: p.revisionId || "",
+          total: p.content && p.content.totalCount != null ? p.content.totalCount : null,
+        };
+      },
+      parsePage: function (res) {
+        var p = res && res.data && res.data.playlistV2;
+        if (!p || !p.content) return null;
+        var items = p.content.items || [];
+        var uris = [];
+        var added = {};
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i] || {};
+          var d = (it.itemV2 || {}).data || {};
+          var uri = d.uri;
+          if (!uri || String(uri).indexOf("spotify:track:") !== 0) continue;
+          uris.push(uri);
+          var addedAt = it.addedAt && it.addedAt.isoString ? Date.parse(it.addedAt.isoString) : null;
+          var addedByData = (it.addedBy || {}).data || {};
+          var addedBy = addedByData.username || addedByData.uri || "";
+          added[uri] = { addedAt: addedAt, addedBy: String(addedBy).replace(/^spotify:user:/, "") };
+        }
+        return { uris: uris, added: added, total: p.content.totalCount, nextOffset: p.content.totalCount != null ? null : 0 };
+      },
+    },
+  };
+
+  var ENDPOINTS = {
+    // --------------------------------------------------------- profiles
+    profile: function (userId, limits) {
+      limits = limits || {};
+      var l = function (k, d) {
+        return limits[k] != null ? limits[k] : d;
+      };
+      return {
+        method: "get",
+        url:
+          SPCLIENT + "/user-profile-view/v3/profile/" + q(userId) +
+          "?playlist_limit=" + l("playlistLimit", 100) +
+          "&artist_limit=" + l("artistLimit", 0) +
+          "&episode_limit=" + l("episodeLimit", 10) +
+          "&market=from_token",
+      };
+    },
+    followers: function (userId) {
+      return { method: "get", url: SPCLIENT + "/user-profile-view/v3/profile/" + q(userId) + "/followers?market=from_token" };
+    },
+    following: function (userId) {
+      return { method: "get", url: SPCLIENT + "/user-profile-view/v3/profile/" + q(userId) + "/following?market=from_token" };
+    },
+
+    // --------------------------------------------------------- listening
+    activityFeed: function () {
+      return {
+        method: "post",
+        url: SPCLIENT + "/listening-activity/v1/feed",
+        body: { unused: true, resultLimit: 100 },
+      };
+    },
+    buddylist: function () {
+      return { method: "get", url: "https://guc-spclient.spotify.com/presence-view/v1/buddylist" };
+    },
+
+    // --------------------------------------------------------- metadata
+    playlistMetadata: function (id) {
+      return { method: "get", url: SPCLIENT + "/playlist/v2/playlist/" + q(id) + "/metadata" };
+    },
+    /**
+     * Track metadata through the client's own GraphQL (pathfinder). Unlike the
+     * Web API this carries the client's session, is not the rate-limited
+     * api.spotify.com route, and returns the real album cover. Returns null when
+     * the client build has no GraphQL helper; callers fall back.
+     */
+    trackViaClient: function (trackUri) {
+      var S = null;
+      try {
+        S = (typeof globalThis !== "undefined" ? globalThis : window).Spicetify;
+      } catch (e) {
+        S = null;
+      }
+      var Q = S && S.GraphQL;
+      var def = Q && Q.Definitions && Q.Definitions.getTrack;
+      if (!Q || !def || typeof Q.Request !== "function") return null;
+      return { client: "graphql", def: def, vars: { uri: trackUri } };
+    },
+    track: function (id) {
+      return { method: "get", url: API + "/tracks/" + q(id) + "?market=from_token" };
+    },
+    me: function () {
+      return { method: "get", url: API + "/me" };
+    },
+    clientVersion: function () {
+      return { method: "get", url: "sp://desktop/v1/version" };
+    },
+  };
+
+  /** Normalise a listening-activity context so artist pages are not read as playlists. */
+  function normalizeContext(ctx) {
+    if (!ctx) return "";
+    var s = String(ctx);
+    var m = /^spotify:list:popular-release-segments-main-roles:artist_([A-Za-z0-9]{22,40})$/.exec(s);
+    if (m) return "spotify:artist:" + m[1];
+    return s;
+  }
+
+  /**
+   * Normalise `listening-activity/v1/feed` output to
+   * { userUri, trackUri, timestamp, isPlaying, contextUri } per the feed shape:
+   * entities[].userEntity|followEntity { uri, activity { entityUri, timestamp, isPlaying, contextUri } }.
+   * Biggest timestamp per user wins. Returns [] on an unexpected shape so the
+   * caller can fall through to the buddylist.
+   */
+  function normalizeActivity(payload) {
+    if (!payload || !Array.isArray(payload.entities)) return null;
+    var byUser = {};
+    for (var i = 0; i < payload.entities.length; i++) {
+      var item = payload.entities[i] || {};
+      var ent = item.userEntity || item.followEntity;
+      if (!ent || !ent.uri || String(ent.uri).indexOf("spotify:user:") !== 0) continue;
+      var act = ent.activity;
+      if (!act) continue;
+      var track = act.entityUri;
+      if (!track || String(track).indexOf("spotify:track:") !== 0) continue;
+      var tsv = act.timestamp ? Date.parse(act.timestamp) : NaN;
+      if (!isFinite(tsv)) continue;
+      if (byUser[ent.uri] && byUser[ent.uri].timestamp >= tsv) continue;
+      byUser[ent.uri] = {
+        userUri: String(ent.uri),
+        userName: (ent.name || ent.username || "").trim(),
+        avatar: (ent.image && (ent.image.url || ent.image)) || "",
+        trackUri: String(track),
+        timestamp: tsv,
+        isPlaying: act.isPlaying !== false,
+        contextUri: normalizeContext(act.contextUri || ""),
+      };
+    }
+    return Object.keys(byUser).map(function (k) {
+      return byUser[k];
+    });
+  }
+
+  /** Legacy buddylist shape -> the same normalised records (timestamp in ms). */
+  function normalizeBuddylist(payload) {
+    var friends = payload && Array.isArray(payload.friends) ? payload.friends : null;
+    if (!friends) return null;
+    var out = [];
+    for (var i = 0; i < friends.length; i++) {
+      var f = friends[i] || {};
+      var user = f.user || {};
+      if (!user.uri || String(user.uri).indexOf("spotify:user:") !== 0) continue;
+      var track = f.track || {};
+      var t = f.timestamp != null ? Number(f.timestamp) : NaN;
+      if (!track.uri || !isFinite(t)) continue;
+      out.push({
+        userUri: String(user.uri),
+        userName: user.name || "",
+        avatar: user.image && (user.image.url || user.image) ? user.image.url || user.image : "",
+        trackUri: String(track.uri),
+        timestamp: t,
+        isPlaying: true,
+        contextUri: normalizeContext((track.artist && track.artist.uri) || ""),
+      });
+    }
+    return out;
+  }
+
+  return {
+    HOSTS: { SPCLIENT: SPCLIENT, PARTNER: PARTNER, API: API, PUBLIC: PUBLIC },
+    SOURCES: SOURCES,
+    ENDPOINTS: ENDPOINTS,
+    normalizeActivity: normalizeActivity,
+    normalizeBuddylist: normalizeBuddylist,
+    normalizeContext: normalizeContext,
+  };
+});

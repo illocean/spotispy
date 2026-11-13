@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Spotispy">
+  <rect width="128" height="128" rx="28" fill="#121212"/>
+  <rect x="0.5" y="0.5" width="127" height="127" rx="27.5" fill="none" stroke="#1ed760" stroke-opacity="0.28"/>
+  <!-- Eye outline: what the app watches -->
+  <path d="M20 64c10-16 25-24 44-24s34 8 44 24c-10 16-25 24-44 24S30 80 20 64Z"
+        fill="none" stroke="#ffffff" stroke-opacity="0.92" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Iris: a green pulse -->
+  <circle cx="64" cy="64" r="15" fill="#1ed760"/>
+  <!-- Pupil -->
+  <circle cx="64" cy="64" r="6" fill="#121212"/>
+  <!-- Watch tick: a single quiet arc under the eye -->
+  <path d="M46 96c10 5 26 5 36 0" fill="none" stroke="#1ed760" stroke-width="4" stroke-linecap="round"/>
+</svg>
