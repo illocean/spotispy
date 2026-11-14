@@ -17,23 +17,25 @@
   var DB_VERSION = 1;
 
   // store -> { keyPath, indexes: [[name, keyPath, unique]] }
+  // Only stores something actually reads or writes are declared, and only
+  // indexes a `range()` call actually uses: an index nobody queries is dead
+  // weight written on every put. `presence` and `metaLog` were never written or
+  // read (only cleared), and `errors` was never touched at all.
   var SCHEMA = {
     profiles: { keyPath: "id", indexes: [] },
     playlists: { keyPath: "id", indexes: [] },
     snapshots: { keyPath: "playlistId", indexes: [] },
-    tracks: { keyPath: "uri", indexes: [["fetchedAt", "fetchedAt", false]] },
+    tracks: { keyPath: "uri", indexes: [] },
     changes: {
       keyPath: "key",
       indexes: [
-        ["bucket", "bucket", false],
         ["ts", "ts", false],
-        ["kind", "kind", false],
         ["target", "target", false],
       ],
     },
-    aggregates: { keyPath: "key", indexes: [["target", "target", false]] },
-    profileSets: { keyPath: "key", indexes: [["profileId", "profileId", false]] },
-    watches: { keyPath: "key", indexes: [["kind", "kind", false]] },
+    aggregates: { keyPath: "key", indexes: [] },
+    profileSets: { keyPath: "key", indexes: [] },
+    watches: { keyPath: "key", indexes: [] },
     plays: {
       keyPath: "key",
       indexes: [
@@ -41,19 +43,10 @@
         ["ts", "ts", false],
       ],
     },
-    sessions: {
-      keyPath: "id",
-      indexes: [
-        ["userStarted", ["userId", "startedAt"], false],
-        ["startedAt", "startedAt", false],
-      ],
-    },
-    presence: { keyPath: "key", indexes: [["day", "day", false]] },
-    dayTicks: { keyPath: "key", indexes: [["day", "day", false]] },
+    sessions: { keyPath: "id", indexes: [] },
+    dayTicks: { keyPath: "key", indexes: [] },
     activityState: { keyPath: "userId", indexes: [] },
     meta: { keyPath: "key", indexes: [] },
-    metaLog: { keyPath: "key", indexes: [] },
-    errors: { keyPath: "key", indexes: [] },
   };
 
   var db = null;
@@ -206,12 +199,6 @@
     });
   }
 
-  function clear(store) {
-    return tx(store, "readwrite", function (t) {
-      return req(t.objectStore(store).clear());
-    });
-  }
-
   function count(store) {
     return tx(store, "readonly", function (t) {
       return req(t.objectStore(store).count());
@@ -274,10 +261,8 @@
     return batch([
       ["plays", "clear"],
       ["sessions", "clear"],
-      ["presence", "clear"],
       ["dayTicks", "clear"],
       ["activityState", "clear"],
-      ["metaLog", "clear"],
     ]);
   }
 
@@ -316,7 +301,6 @@
     getAll: getAll,
     put: put,
     del: del,
-    clear: clear,
     count: count,
     range: range,
     batch: batch,

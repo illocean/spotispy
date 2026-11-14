@@ -55,7 +55,6 @@
   }
 
   var current = Object.assign({}, DEFAULTS);
-  var subs = [];
   var loaded = false;
   var LS = storage();
 
@@ -103,13 +102,6 @@
     } catch (e) {
       /* settings stay in memory when storage is full */
     }
-    for (var i = 0; i < subs.length; i++) {
-      try {
-        subs[i](current);
-      } catch (e2) {
-        /* a bad listener must not break settings */
-      }
-    }
   }
 
   function set(patch) {
@@ -131,15 +123,6 @@
     return current;
   }
 
-  function subscribe(fn) {
-    subs.push(fn);
-    return function () {
-      subs = subs.filter(function (f) {
-        return f !== fn;
-      });
-    };
-  }
-
   return {
     KEY: KEY,
     DEFAULTS: DEFAULTS,
@@ -148,16 +131,5 @@
     set: set,
     save: save,
     coerce: coerce,
-    subscribe: subscribe,
-    /** Test seam: replace the storage backend. */
-    _useStorage: function (impl) {
-      LS = impl;
-      loaded = false;
-      current = Object.assign({}, DEFAULTS);
-    },
-    _reset: function () {
-      loaded = false;
-      current = Object.assign({}, DEFAULTS);
-    },
   };
 });

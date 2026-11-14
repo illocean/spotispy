@@ -1,7 +1,5 @@
 # Spotispy
 
-![Spotispy](docs/banner.svg)
-
 [![CI](https://github.com/illocean/spotispy/actions/workflows/ci.yml/badge.svg)](https://github.com/illocean/spotispy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1ed760.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/unit%20%2B%20ui-152%20passing-1ed760.svg)](#tests-no-spotify-needed)

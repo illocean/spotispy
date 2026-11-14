@@ -22,10 +22,6 @@
     return root.PWT.util;
   }
 
-  function KINDS() {
-    return root.PWT.events.KINDS;
-  }
-
   // Inline SVG icons: stroke = currentColor, viewBox 0 0 24 24.
   var SVG = {
     user: '<path d="M16 21v-1.2c0-1.7-1.3-3-3-3H7c-1.7 0-3 1.3-3 3V21" /><circle cx="10" cy="8" r="3.4" />',
@@ -162,7 +158,7 @@
         alt: props.alt || "",
         style: style,
         seed: props.id || props.name,
-        fallbackText: (props.initials || (props.name || "?").slice(0, 1)).toUpperCase(),
+        fallbackText: (props.name || "?").slice(0, 1).toUpperCase(),
       });
     }
     return h(
@@ -174,7 +170,7 @@
         role: "img",
         "aria-label": props.alt || "cover",
       },
-      (props.initials || (props.name || "?").slice(0, 1)).toUpperCase()
+      (props.name || "?").slice(0, 1).toUpperCase()
     );
   }
 
@@ -307,7 +303,7 @@
         src: props.src,
         alt: props.alt || "",
         seed: props.id || props.name,
-        fallbackText: (props.initials || (props.name || "?").slice(0, 1)).toUpperCase(),
+        fallbackText: (props.name || "?").slice(0, 1).toUpperCase(),
       });
     }
     return h(
@@ -319,7 +315,7 @@
         role: "img",
         "aria-label": props.alt || "avatar",
       },
-      (props.initials || (props.name || "?").slice(0, 1)).toUpperCase()
+      (props.name || "?").slice(0, 1).toUpperCase()
     );
   }
 
@@ -356,30 +352,6 @@
           )
         : null,
       props.children
-    );
-  }
-
-  function Tabs(props) {
-    return h(
-      "div",
-      { class: "pwt-tabs", role: "tablist" },
-      props.tabs.map(function (t) {
-        return h(
-          "button",
-          {
-            key: t.id,
-            type: "button",
-            role: "tab",
-            "aria-selected": props.active === t.id ? "true" : "false",
-            class: "pwt-tab" + (props.active === t.id ? " is-active" : ""),
-            onClick: function () {
-              if (props.onChange) props.onChange(t.id);
-            },
-          },
-          t.label,
-          t.count != null ? h("span", { class: "pwt-tab-count" }, String(t.count)) : null
-        );
-      })
     );
   }
 
@@ -470,7 +442,6 @@
   }
 
   return {
-    ICON: ICON,
     ID_SHAPED: ID_SHAPED,
     idShaped: idShaped,
     icon: icon,
@@ -486,12 +457,10 @@
     Stat: Stat,
     Empty: Empty,
     Section: Section,
-    Tabs: Tabs,
     Health: Health,
     Progress: Progress,
     ChangeRow: ChangeRow,
     Unavailable: Unavailable,
     Countdown: Countdown,
-    KINDS: KINDS,
   };
 });

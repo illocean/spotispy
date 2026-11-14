@@ -60,7 +60,7 @@
         // emit() returns whether the send landed (OS channel or a real toast),
         // so a degraded client — one that only console.info's — never stamps
         // the key.
-        return P.notify.emit("Spotispy scan", line, settings) === true;
+        return P.notify.emit("Spotispy scan", line) === true;
       });
     };
   }

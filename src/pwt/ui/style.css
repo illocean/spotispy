@@ -98,7 +98,6 @@
 .pwt-user-card-main:focus-visible,
 .pwt-link-btn:focus-visible,
 .pwt-ribbon-retry:focus-visible,
-.pwt-tab:focus-visible,
 .pwt-toggle:focus-within,
 button.pwt-toggle:focus-visible {
   outline: 2px solid var(--sp-green);
@@ -573,7 +572,6 @@ select.pwt-input { appearance: auto; }
 .pwt-popup-field input:focus, .pwt-popup-field textarea:focus { outline: 2px solid var(--sp-green); outline-offset: 1px; }
 .pwt-popup-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .pwt-toast { background: var(--sp-surface-strong); color: var(--sp-text); border: 1px solid var(--sp-line-strong); border-left: 3px solid var(--sp-green); border-radius: var(--sp-radius-sm); padding: 10px 14px; font-size: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4); max-width: 340px; }
-.pwt-error-text { color: var(--sp-danger); }
 
 /* ---------- crash screen ---------- */
 .pwt-crash { padding: 40px 24px; color: var(--sp-text); font-family: var(--font-ui); }

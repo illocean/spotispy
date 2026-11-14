@@ -42,9 +42,6 @@
     ],
   };
 
-  // Logged to the `changes` store (and therefore subject to the row cap).
-  var LOGGED_LEVELS = { profile: true, playlist: true };
-
   function levelOf(kind) {
     for (var l in KINDS) {
       if (!Object.prototype.hasOwnProperty.call(KINDS, l)) continue;
@@ -104,7 +101,6 @@
 
   return {
     KINDS: KINDS,
-    LOGGED_LEVELS: LOGGED_LEVELS,
     levelOf: levelOf,
     aggregateLevel: aggregateLevel,
     aggregateField: aggregateField,

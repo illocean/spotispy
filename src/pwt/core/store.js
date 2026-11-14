@@ -20,6 +20,16 @@
 
   var shared = root.PWT || {};
 
+  /**
+   * Aggregate commits are serialised through this chain. `commitScan` reads the
+   * `aggregates` store, mutates it in memory and writes it back in a later
+   * transaction, and the scanners commit concurrently (net.pool), so two
+   * overlapping read-modify-writes would lose each other's counts. Chaining
+   * makes every commit observe the previous one's write. A rejection must not
+   * poison the chain for later commits, so the tail is normalised to fulfilled.
+   */
+  var aggChain = Promise.resolve();
+
   function db() {
     var d = root.PWT && root.PWT.db;
     return d;
@@ -105,65 +115,95 @@
       );
     };
     plan = plan || {};
-    var rows = plan.changes || [];
+    var rowsIn = plan.changes || [];
     var puts = plan.puts || [];
     var dels = plan.dels || [];
     var known = plan.knownKeys || {};
     var i;
 
-    // Rows sharing a key are one logical change: collapse them so a re-scan
-    // neither duplicates the row nor double-counts the aggregate.
-    var unique = [];
-    var seenKeys = {};
-    for (i = 0; i < rows.length; i++) {
-      var k = logKey(rows[i]);
-      if (seenKeys[k]) continue;
-      seenKeys[k] = true;
-      unique.push(rows[i]);
-    }
-    rows = unique;
+    // The guard has to see what is already in the log, not just what this plan
+    // declared: the scanners never pass knownKeys, so a re-emitted row would
+    // write no duplicate (the store is keyed) yet still bump the day bucket.
+    var logged = {};
+    var ops = null;
+    var touched = null;
+    var keys = null;
 
-    var ops = putOps(puts).concat(delOps(dels));
-    var touched = {};
-
-    for (i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      var key = logKey(row);
-      if (known[key]) continue;
-      ops.push(["changes", "put", changesRecord(key, row)]);
-      var day = diff().dayKey(row.ts);
-      var level = events().aggregateLevel(row.kind);
-      var field = events().aggregateField(row.kind);
-      var aggK = aggKey(level, row.target, "day", day);
-      touched[aggK] = touched[aggK] || { level: level, target: row.target, day: day };
-      touched[aggK][field] = (touched[aggK][field] || 0) + 1;
-    }
-
-    var keys = Object.keys(touched);
-    if (!keys.length && !ops.length) return __wrap(Promise.resolve());
-    if (!keys.length) return __wrap(db().batch(ops).then(trimLog));
-
-    var existingP = db().getAll("aggregates");
-    return __wrap(existingP
-      .then(function (existing) {
-        var byKey = {};
-        for (var j = 0; j < existing.length; j++) byKey[existing[j].key] = existing[j];
-        for (var k = 0; k < keys.length; k++) {
-          var t = touched[keys[k]];
-          var agg = byKey[keys[k]];
-          if (!agg) {
-            agg = { key: keys[k], level: t.level, target: t.target, label: "day", day: t.day, added: 0, removed: 0, edits: 0, plays: 0 };
-            byKey[keys[k]] = agg;
+    // One serialised step. The guard read, the aggregate read, both increments
+    // and both writes all happen inside the chain: the guard must be inside it
+    // too, or two concurrent commits both observe a row as unlogged and both
+    // count it. See aggChain.
+    var step = function () {
+      return db()
+        .getAll("changes")
+        .then(function (existing) {
+          for (var e = 0; e < existing.length; e++) logged[existing[e].key] = true;
+        })
+        .then(function () {
+          // Rows sharing a key are one logical change: collapse them so a
+          // re-scan neither duplicates the row nor double-counts the aggregate.
+          var rows = [];
+          for (i = 0; i < rowsIn.length; i++) {
+            var key = logKey(rowsIn[i]);
+            // A row already in the log is not counted again: the `changes` store
+            // is keyed, so the write is idempotent, but the aggregate increment
+            // is not. Re-emitting an identical row must not inflate the bucket.
+            if (known[key] || logged[key]) continue;
+            logged[key] = true;
+            rows.push(rowsIn[i]);
           }
-          if (t.added) agg.added += t.added;
-          if (t.removed) agg.removed += t.removed;
-          if (t.edits) agg.edits += t.edits;
-          if (t.plays) agg.plays += t.plays;
-          ops.push(["aggregates", "put", agg]);
-        }
-        return db().batch(ops);
-      })
-      .then(trimLog));
+
+          ops = putOps(puts).concat(delOps(dels));
+          touched = {};
+
+          for (i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            ops.push(["changes", "put", changesRecord(logKey(row), row)]);
+            var day = diff().dayKey(row.ts);
+            var level = events().aggregateLevel(row.kind);
+            var field = events().aggregateField(row.kind);
+            var aggK = aggKey(level, row.target, "day", day);
+            touched[aggK] = touched[aggK] || { level: level, target: row.target, day: day };
+            touched[aggK][field] = (touched[aggK][field] || 0) + 1;
+          }
+
+          keys = Object.keys(touched);
+          if (!keys.length) return null; // nothing to increment
+
+          return db()
+            .getAll("aggregates")
+            .then(function (existing) {
+              var byKey = {};
+              for (var j = 0; j < existing.length; j++) byKey[existing[j].key] = existing[j];
+              for (var k = 0; k < keys.length; k++) {
+                var t = touched[keys[k]];
+                var agg = byKey[keys[k]];
+                if (!agg) {
+                  agg = { key: keys[k], level: t.level, target: t.target, label: "day", day: t.day, added: 0, removed: 0, edits: 0, plays: 0 };
+                  byKey[keys[k]] = agg;
+                }
+                if (t.added) agg.added += t.added;
+                if (t.removed) agg.removed += t.removed;
+                if (t.edits) agg.edits += t.edits;
+                if (t.plays) agg.plays += t.plays;
+                ops.push(["aggregates", "put", agg]);
+              }
+            });
+        })
+        .then(function () {
+          if (!ops || !ops.length) return null;
+          return db().batch(ops);
+        })
+        .then(trimLog);
+    };
+
+    var chained = aggChain.then(step, step);
+    // Keep the chain alive after a failure, but still surface the rejection.
+    aggChain = chained.then(
+      function () {},
+      function () {}
+    );
+    return __wrap(chained);
   }
 
   /** Keep the log under the cap; day aggregates are never trimmed. */
@@ -204,8 +244,10 @@
                 return r.bucket === bucket;
               })
             : rows;
-          return kept
-            .map(toRow)
+          // Filter the kind BEFORE slicing, for the same reason the `ts` branch
+          // below does: a slice first would drop older matching rows behind
+          // newer rows of another kind.
+          return applyKind(kept.map(toRow), kind)
             .filter(function (x) {
               return x.target === target;
             })
@@ -213,9 +255,6 @@
               return b.ts - a.ts;
             })
             .slice(0, take);
-        })
-        .then(function (rows) {
-          return applyKind(rows, kind);
         });
     }
     // Read newest-first and apply the bucket/kind filters BEFORE slicing:
@@ -309,12 +348,6 @@
     return db().del("watches", kind + ":" + id);
   }
 
-  function isWatched(kind, id) {
-    return db().get("watches", kind + ":" + id).then(function (w) {
-      return !!w;
-    });
-  }
-
   // -------------------------------------------------------- activity rows
 
   function addPlays(plays) {
@@ -366,26 +399,6 @@
       });
   }
 
-  function pruneActivities(cutoffTs) {
-    var cutoff = cutoffTs || Date.now() - (config().get().retainDays || 90) * 86400000;
-    var ops = [];
-    return db()
-      .range("plays", "ts", undefined, { limit: 100000 })
-      .then(function (rows) {
-        for (var i = 0; i < rows.length; i++) if (rows[i].ts < cutoff) ops.push(["plays", "del", rows[i].key]);
-        return db().getAll("sessions");
-      })
-      .then(function (sessions) {
-        for (var i = 0; i < sessions.length; i++) if (sessions[i].startedAt < cutoff) ops.push(["sessions", "del", sessions[i].id]);
-        return db().getAll("dayTicks");
-      })
-      .then(function (ticks) {
-        var cutoffDay = diff().dayKey(cutoff);
-        for (var i = 0; i < ticks.length; i++) if (ticks[i].day < cutoffDay) ops.push(["dayTicks", "del", ticks[i].key]);
-        return ops.length ? db().batch(ops) : null;
-      });
-  }
-
   function setMeta(key, value) {
     return db().put("meta", { key: key, value: value });
   }
@@ -397,21 +410,17 @@
   }
 
   return {
-    logKey: logKey,
     commitScan: commitScan,
     recentChanges: recentChanges,
     changesFor: changesFor,
     dailyTotals: dailyTotals,
-    trimLog: trimLog,
     listWatches: listWatches,
     putWatch: putWatch,
     removeWatch: removeWatch,
-    isWatched: isWatched,
     addPlays: addPlays,
     putSessions: putSessions,
     playsFor: playsFor,
     sessionsFor: sessionsFor,
-    pruneActivities: pruneActivities,
     setMeta: setMeta,
     getMeta: getMeta,
   };

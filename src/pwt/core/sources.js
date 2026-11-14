@@ -30,9 +30,7 @@
   }
 
   /**
-   * Public open.spotify.com playlist JSON, the no-session fallback. `decoded`
-   * marks sources that return parsed data instead of raw CosmosAsync output.
-   * `caps` records whether the source truncates long playlists.
+   * Endpoint definitions. When Spotify breaks a route, fix it here.
    */
   var SOURCES = {
     // ---------------------------------------------------------- playlists
@@ -42,10 +40,6 @@
      * builds. Melior uses the same `api.spotify.com` host through Cosmos.
      */
     apiPlaylistTracks: {
-      id: "apiTracks",
-      label: "Web API playlist tracks",
-      caps: false,
-      sessionOnly: true,
       fn: function (id, opts) {
         opts = opts || {};
         var offset = opts.offset || 0;
@@ -78,9 +72,6 @@
       },
     },
     coreRows: {
-      id: "core",
-      label: "Client playlist rows",
-      caps: false,
       fn: function (id) {
         return {
           method: "get",
@@ -111,8 +102,6 @@
       },
     },
     coreMeta: {
-      id: "coreMeta",
-      label: "Client playlist metadata",
       fn: function (id) {
         return { method: "get", url: "wg://core-playlist/v1/playlist/spotify:playlist:" + q(id) + "/metadata" };
       },
@@ -132,10 +121,6 @@
       },
     },
     apiPlaylist: {
-      id: "api",
-      label: "Web API playlist",
-      caps: false,
-      sessionOnly: true,
       fn: function (id) {
         return { method: "get", url: API + "/playlists/" + q(id) + "?market=from_token" };
       },
@@ -149,15 +134,11 @@
           coverUrl: (r.images && r.images[0] && r.images[0].url) || "",
           coverHash:
             ((r.images && r.images[0] && String(r.images[0].url).split("/").pop().split("?")[0]) || "") + "|" + (r.snapshot_id || ""),
-          devApi: true,
           raw: r,
         };
       },
     },
     embed: {
-      id: "embed",
-      label: "Public embed JSON",
-      caps: true,
       fn: function (id) {
         return { method: "fetch", url: PUBLIC + "/embed/playlist/" + q(id), format: "text" };
       },
@@ -199,9 +180,6 @@
       },
     },
     pathfinder: {
-      id: "pathfinder",
-      label: "Public web-player GraphQL",
-      caps: false,
       // ONE hash covers fetchPlaylist/fetchPlaylistMetadata/fetchPlaylistContents;
       // the server picks the operation by name (verified in the 2026 web-player bundle).
       hash: "21ea11a6ac75a5f3e01fd365d29c18e0a4a8b7dc09f89bbb5d73910190c6acaf",
@@ -250,7 +228,6 @@
           owner: (p.ownerV2 && (p.ownerV2.data && (p.ownerV2.data.username || p.ownerV2.data.uri))) || "",
           coverUrl: p.images && p.images.items && p.images.items[0] ? p.images.items[0].sources.slice(-1)[0].url : "",
           description: p.description || "",
-          revisionId: p.revisionId || "",
           total: p.content && p.content.totalCount != null ? p.content.totalCount : null,
         };
       },
@@ -271,7 +248,7 @@
           var addedBy = addedByData.username || addedByData.uri || "";
           added[uri] = { addedAt: addedAt, addedBy: String(addedBy).replace(/^spotify:user:/, "") };
         }
-        return { uris: uris, added: added, total: p.content.totalCount, nextOffset: p.content.totalCount != null ? null : 0 };
+        return { uris: uris, added: added, total: p.content.totalCount };
       },
     },
   };
@@ -416,11 +393,9 @@
   }
 
   return {
-    HOSTS: { SPCLIENT: SPCLIENT, PARTNER: PARTNER, API: API, PUBLIC: PUBLIC },
     SOURCES: SOURCES,
     ENDPOINTS: ENDPOINTS,
     normalizeActivity: normalizeActivity,
     normalizeBuddylist: normalizeBuddylist,
-    normalizeContext: normalizeContext,
   };
 });

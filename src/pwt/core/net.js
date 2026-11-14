@@ -292,7 +292,6 @@
   function pool(items, limit, task, onProgress, jitter) {
     items = items || [];
     var results = new Array(items.length);
-    var errors = [];
     var next = 0;
     var done = 0;
     var total = items.length;
@@ -309,7 +308,6 @@
           },
           function (e) {
             results[i] = { ok: false, error: e };
-            errors.push(e);
           }
         )
         .then(function () {
@@ -321,29 +319,8 @@
     var workers = [];
     for (var w = 0; w < Math.min(limit, total); w++) workers.push(run());
     return Promise.all(workers).then(function () {
-      return { results: results, errors: errors };
+      return { results: results };
     });
-  }
-
-  /**
-   * Capability probe: report what this client can read, never a silent zero.
-   * @returns {Promise<{id: string, state: 'ok'|'degraded'|'unavailable', status?: number, error?: string}>}
-   */
-  function probe(label, spec, validate) {
-    return call(spec).then(
-      function (v) {
-        var ok = typeof validate === "function" ? validate(v) : v != null;
-        return { label: label, state: ok ? "ok" : "degraded", error: ok ? undefined : "unexpected payload" };
-      },
-      function (e) {
-        return {
-          label: label,
-          state: e.code === "forbidden" || e.code === "unauthorized" || e.code === "notfound" ? "unavailable" : "degraded",
-          status: e.status,
-          error: e.message,
-        };
-      }
-    );
   }
 
   function reset() {
@@ -355,18 +332,15 @@
   return {
     NEGATIVE_TTL: NEGATIVE_TTL,
     request: request,
-    fetchText: fetchText,
     call: call,
     isNegative: isNegative,
     markNegative: markNegative,
     clearNegative: clearNegative,
     pool: pool,
-    probe: probe,
     describeError: describeError,
     bodyError: bodyError,
     bodyErrorCode: bodyErrorCode,
     bodyErrorMessage: bodyErrorMessage,
-    sleep: sleep,
     reset: reset,
     _backoff: function () {
       return backoff;

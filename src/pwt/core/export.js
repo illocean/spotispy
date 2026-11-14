@@ -8,8 +8,6 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (root) {
   "use strict";
 
-  var COLUMNS = ["ts", "observedAt", "level", "target", "kind", "title", "detail", "uri"];
-
   function toRows(rows) {
     return (rows || []).map(function (r) {
       return [
@@ -36,7 +34,6 @@
 
   /** Trigger a browser download of a string. */
   function download(filename, mime, content) {
-    var pwt = root.PWT;
     var doc = root.document;
     if (!doc) return false;
     var blob = new root.Blob([content], { type: mime });
@@ -51,7 +48,6 @@
       a.remove();
       root.URL.revokeObjectURL(url);
     }, 0);
-    void pwt;
     return true;
   }
 
@@ -63,5 +59,5 @@
     return prefix + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + "." + ext;
   }
 
-  return { COLUMNS: COLUMNS, toRows: toRows, toCsv: toCsv, toJson: toJson, download: download, filename: filename };
+  return { toRows: toRows, toCsv: toCsv, toJson: toJson, download: download, filename: filename };
 });

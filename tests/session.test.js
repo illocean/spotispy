@@ -85,6 +85,21 @@ test("re-announcements of one play count towards the loop", () => {
   assert.equal(s.session.trackCount, 1);
 });
 
+test("a resume followed by a re-announcement does not count the same play twice", () => {
+  // Regression: the resume sample satisfies both `newPlay` and `reannounce`, so
+  // the run was incremented twice for one play and the loop fired early.
+  const s = S.state();
+  S.apply(s, sample({ ts: T0, isPlaying: true })); // play 1
+  S.apply(s, sample({ ts: T0 + 3000, isPlaying: false })); // pause
+  const resumed = S.apply(s, sample({ ts: T0 + 6000, isPlaying: true })); // play 2
+  assert.equal(resumed.plays.length, 1, "the resume is one play");
+  assert.equal(resumed.plays[0].loopIndex, 1, "and the first of its own run");
+  const re = S.apply(s, sample({ ts: T0 + 9000, isPlaying: true })); // re-announcement
+  assert.equal(re.looped, undefined, "two real plays are not a loop");
+  assert.equal(s.session.looped, false, "the session is not marked as looping");
+  assert.equal(s.session.trackCount, 2, "two plays, not three");
+});
+
 test("a track abandoned before half its duration marks the session skipped", () => {
   const s = S.state();
   S.apply(s, sample({ ts: T0, durationMs: 240000 }));

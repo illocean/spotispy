@@ -200,12 +200,16 @@
     }
     if (reannounce) {
       // The feed re-announces the current track every few seconds. That is one
-      // play, but a run of re-announcements means the track is looping.
-      var before = s.streak.trackUri === track ? s.streak.count : 0;
-      s.streak = { trackUri: track, count: before + 1 };
-      if (s.streak.count >= t.LOOP_AT && s.session) {
-        s.session.looped = true;
-        if (before && before < t.LOOP_AT) out.looped = true; // report once per run
+      // play, but a run of re-announcements means the track is looping. A sample
+      // classified as a resume above already counted this play, so it must not
+      // be counted again here.
+      if (!resumed) {
+        var before = s.streak.trackUri === track ? s.streak.count : 0;
+        s.streak = { trackUri: track, count: before + 1 };
+        if (s.streak.count >= t.LOOP_AT && s.session) {
+          s.session.looped = true;
+          if (before && before < t.LOOP_AT) out.looped = true; // report once per run
+        }
       }
     }
     if (track) s.lastTrackUri = track;
@@ -263,16 +267,6 @@
     return windows;
   }
 
-  /** Loop count for the trailing run of one track in an ordered play list. */
-  function loopStreak(plays, trackUri) {
-    var n = 0;
-    for (var i = (plays || []).length - 1; i >= 0; i--) {
-      if (plays[i].trackUri === trackUri) n++;
-      else break;
-    }
-    return n;
-  }
-
   return {
     DEFAULT_TUNING: DEFAULT_TUNING,
     state: state,
@@ -281,8 +275,6 @@
     apply: apply,
     missed: missed,
     closeAll: closeAll,
-    finalizeSession: finalizeSession,
     presenceWindows: presenceWindows,
-    loopStreak: loopStreak,
   };
 });

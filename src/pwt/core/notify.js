@@ -14,9 +14,6 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (root) {
   "use strict";
 
-  var permissionAsked = null;
-  var lastPresence = 0;
-
   function canOs() {
     return typeof root.Notification === "function";
   }
@@ -25,20 +22,6 @@
   function osState() {
     if (!canOs()) return { supported: false, state: "unavailable" };
     return { supported: true, state: root.Notification.permission || "default" };
-  }
-
-  function ensurePermission() {
-    if (!canOs() || root.Notification.permission !== "default") return Promise.resolve(osState());
-    if (!permissionAsked) {
-      try {
-        permissionAsked = root.Notification.requestPermission().then(function () {
-          return osState();
-        });
-      } catch (e) {
-        permissionAsked = Promise.resolve({ supported: true, state: "denied" });
-      }
-    }
-    return permissionAsked;
   }
 
   function toast(message) {
@@ -73,20 +56,10 @@
   }
 
   /** Single channel used by the pollers: toast when focused, OS otherwise. */
-  function emit(title, body, settings) {
-    settings = settings || {};
+  function emit(title, body) {
     var sent = false;
     if (!focused()) sent = osNotify(title, body);
     if (!sent) return toast(body ? title + " — " + body : title);
-    return true;
-  }
-
-  /** Rate-limited "friend is now playing" toast: at most once a minute (§5.7). */
-  function presence(title, body, now) {
-    var t = now == null ? Date.now() : now;
-    if (t - lastPresence < 60000) return false;
-    lastPresence = t;
-    toast(title + " — " + body);
     return true;
   }
 
@@ -106,14 +79,9 @@
   return {
     canOs: canOs,
     osState: osState,
-    ensurePermission: ensurePermission,
     toast: toast,
     osNotify: osNotify,
     emit: emit,
-    presence: presence,
     digest: digest,
-    _resetPresence: function () {
-      lastPresence = 0;
-    },
   };
 });

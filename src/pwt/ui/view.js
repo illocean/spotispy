@@ -46,7 +46,6 @@
    *         nextScanAt, lastScanTotals, scan }
    */
   function userDashboard(data, selectedId, now) {
-    var u = U();
     var profiles = data.profiles || [];
     var plRows = data.playlists || [];
     var watches = data.watches || [];
@@ -216,8 +215,7 @@
   }
 
   /** Profile roster row (§5.2). */
-  function profileRow(p, playlists, changes, now) {
-    var u = U();
+  function profileRow(p, playlists, changes) {
     var owned = (playlists || []).filter(function (pl) {
       return p.ownerId && pl.ownerId === p.id;
     });

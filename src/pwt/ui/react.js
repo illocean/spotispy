@@ -51,11 +51,6 @@
     throw new Error("React is unavailable");
   }
 
-  function Fragment(props) {
-    var R = react();
-    return R && R.Fragment ? R.Fragment : props.children;
-  }
-
   /** Hook grabbers; each falls back to a no-op so a UI glitch never hard-crashes. */
   function hooks() {
     var R = react() || {};
@@ -96,5 +91,5 @@
     throw new Error("Spicetify.ReactDOM is unavailable");
   }
 
-  return { h: h, Fragment: Fragment, hooks: hooks, react: react, dom: dom, mount: mount };
+  return { h: h, hooks: hooks, react: react, dom: dom, mount: mount };
 });

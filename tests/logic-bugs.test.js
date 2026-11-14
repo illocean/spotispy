@@ -665,3 +665,107 @@ test("scheduler: after activity failures, reschedule() re-arms the activity time
 });
 
 void path;
+// ---------------------------------------------------------------------------
+// 15. commitScan: the aggregate read-modify-write is serialised
+// ---------------------------------------------------------------------------
+
+test("commitScan: concurrent commits do not lose each other's aggregate counts", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    // Each row is its own logical change (distinct uri), and every commit is a
+    // separate read-modify-write of the aggregates store. Unserialised, the
+    // last writer wins and the day bucket counts 1 instead of 5.
+    const plans = [];
+    for (let i = 0; i < 5; i++) {
+      plans.push({
+        changes: [
+          {
+            level: "playlist",
+            target: "plAgg",
+            kind: "playlist.item.added",
+            title: "c" + i,
+            detail: "",
+            ts: now - 1000 - i,
+            observedAt: now - 1000 - i,
+            uri: "spotify:track:agg" + i,
+          },
+        ],
+      });
+    }
+    await Promise.all(plans.map(function (p) { return P.store.commitScan(p); }));
+
+    const rows = await P.db.getAll("changes");
+    assert.equal(rows.length, 5, "every change row was written: " + rows.length);
+    const aggs = await P.db.getAll("aggregates");
+    assert.equal(aggs.length, 1, "one day bucket: " + JSON.stringify(aggs));
+    assert.equal(aggs[0].added, 5, "all five increments survived: " + aggs[0].added);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("commitScan: re-emitting an already-logged row does not count it twice", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const row = {
+      level: "playlist",
+      target: "plDup",
+      kind: "playlist.item.added",
+      title: "same",
+      detail: "",
+      ts: now - 5000,
+      observedAt: now - 5000,
+      uri: "spotify:track:dup1",
+    };
+    await P.store.commitScan({ changes: [row] });
+    await P.store.commitScan({ changes: [row] });
+
+    const rows = await P.db.getAll("changes");
+    assert.equal(rows.length, 1, "the row is idempotent: " + rows.length);
+    const aggs = await P.db.getAll("aggregates");
+    assert.equal(aggs.length, 1, "one bucket: " + JSON.stringify(aggs));
+    assert.equal(aggs[0].added, 1, "the replayed row is not counted again: " + aggs[0].added);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 10d. recentChanges: with a target AND a kind, the kind filters before the limit
+// ---------------------------------------------------------------------------
+
+test("recentChanges: a target + kind applies both before the limit", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const changes = [];
+    // 5 newer removals and 3 older additions on the same target. Each row needs
+    // a distinct uri or rowKey() collapses them into one logical change.
+    for (let i = 0; i < 5; i++) {
+      changes.push({ level: "playlist", target: "plTK", kind: "playlist.item.removed", title: "other" + i, detail: "", ts: now - 1000 - i, observedAt: now - 1000 - i, uri: "spotify:track:tother" + i });
+    }
+    for (let j = 0; j < 3; j++) {
+      changes.push({ level: "playlist", target: "plTK", kind: "playlist.item.added", title: "wanted" + j, detail: "", ts: now - 10000 - j, observedAt: now - 10000 - j, uri: "spotify:track:twanted" + j });
+    }
+    await P.store.commitScan({ changes: changes });
+
+    const added = await P.store.recentChanges(3, "plTK", "playlist.item.added");
+    assert.equal(added.length, 3, "the limit applies to the wanted kind, not to the raw row count: " + added.length);
+    assert.ok(added.every(function (r) { return r.kind === "playlist.item.added"; }), "only the wanted kind");
+    assert.equal(added[0].title, "wanted0", "newest of the wanted kind first");
+
+    const removed = await P.store.recentChanges(2, "plTK", "playlist.item.removed");
+    assert.equal(removed.length, 2, "the other kind is still reachable: " + removed.length);
+    assert.ok(removed.every(function (r) { return r.kind === "playlist.item.removed"; }), "only removals");
+
+    const any = await P.store.recentChanges(4, "plTK");
+    assert.equal(any.length, 4, "no kind returns the newest rows of any kind: " + any.length);
+  } finally {
+    await P.db.close();
+  }
+});

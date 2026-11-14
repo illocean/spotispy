@@ -136,10 +136,6 @@
     lastSelfTest = null;
   }
 
-  function last() {
-    return lastSelfTest;
-  }
-
   /**
    * In-app self-test. Each check is timed and isolated; a failing check is
    * reported, never thrown. Network checks are read-only and optional.
@@ -325,7 +321,6 @@
     slowest: slowest,
     report: report,
     runSelfTest: runSelfTest,
-    last: last,
     reset: reset,
     _entries: function () {
       return entries.slice();
