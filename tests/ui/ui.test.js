@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const { boot, stubSpicetify, fixtures, stubHandlers, seed, render, ART, PLAYLIST_ID, PLAYLIST_ID_2, USER_ID, ROOT } = require("../support/harness.js");
+const pa = require("../support/playlist-api.js");
 
 const state = {};
 
@@ -244,6 +245,55 @@ test("activity renders user pictures and track art", async () => {
   assert.ok(html.indexOf("pwt-thumb") >= 0, "track art");
 });
 
+test("activity renders sessions as grouped, filterable rows and no Top contexts", async () => {
+  const { P, win } = state;
+  const now = Date.now();
+  const mkCard = (id, userId, userName, startedAt) => ({
+    id: id,
+    userId: userId,
+    userName: userName,
+    avatar: "",
+    startedAt: startedAt,
+    endedAt: startedAt + 30 * 60000,
+    durationLabel: "30m",
+    trackCount: 4,
+    loops: id === "sess-a",
+    skips: false,
+    unclean: false,
+    tracks: [{ uri: "spotify:track:" + id, title: "Track " + id, artist: "Artist", art: "" }],
+  });
+  const cards = [
+    mkCard("sess-a", "fixture-aaa", "Ari", now),
+    mkCard("sess-b", "fixture-bbb", "Bo", now - 2 * 86400000),
+    mkCard("sess-c", "fixture-aaa", "Ari", now - 2 * 86400000 - 3600000),
+  ];
+  const base = {
+    state: "ok",
+    source: "listening-activity",
+    lastTick: now,
+    live: [],
+    sessions: cards,
+    heat: P.view.heatmap([], now),
+    presence: [],
+  };
+  const html = await render(P, win, P.ui.Activity, { model: base, filter: { query: "" }, onFilter: function () {} });
+  assert.ok(html.indexOf("Top contexts") < 0, "the Top contexts section is gone");
+  assert.ok(html.indexOf("pwt-sess-list") >= 0, "the grouped session list renders");
+  assert.equal((html.match(/pwt-sess-group"/g) || []).length, 2, "two day groups (today and two days ago)");
+  assert.equal((html.match(/pwt-sess-row[ "]/g) || []).length, 3, "one row per session");
+  assert.ok(html.indexOf('aria-expanded="true"') >= 0, "session rows render expanded by default");
+  assert.ok(html.indexOf('data-pwt="sess-user"') >= 0, "the user filter renders");
+  assert.ok(html.indexOf('data-pwt="sess-days"') >= 0, "the date preset filter renders");
+  // The "today" preset keeps only the session that started today.
+  const todayHtml = await render(P, win, P.ui.Activity, { model: base, filter: { query: "", days: "today" }, onFilter: function () {} });
+  assert.equal((todayHtml.match(/pwt-sess-row[ "]/g) || []).length, 1, "the today preset filters by local day");
+  assert.ok(todayHtml.indexOf("Bo") < 0, "the two-day-old session is filtered out");
+  // The user filter keeps only the chosen friend.
+  const userHtml = await render(P, win, P.ui.Activity, { model: base, filter: { query: "", user: "fixture-bbb" }, onFilter: function () {} });
+  assert.equal((userHtml.match(/pwt-sess-row[ "]/g) || []).length, 1, "the user filter selects one friend");
+  assert.ok(userHtml.indexOf("Bo") >= 0, "the kept session belongs to Bo");
+});
+
 test("the change log renders images and dates", async () => {
   const { P, win } = state;
   const html = await render(P, win, P.ui.Log, { rows: state.recent, filter: { query: "", kind: "", level: "" }, onFilter: function () {} });
@@ -273,7 +323,7 @@ test("the self-test runs every check and reports no failure", async () => {
   assert.ok(result.pass >= 8);
   const names = result.checks.map(function (c) { return c.name; });
   assert.ok(names.indexOf("IndexedDB opens and counts rows") >= 0, "db check");
-  assert.ok(names.some(function (n) { return /Web API reachable/.test(n); }), "network check");
+  assert.ok(names.some(function (n) { return /client playlist API/.test(n); }), "the client playlist-route check");
 });
 
 test("the self-test reports a failing check instead of throwing", async () => {
@@ -426,6 +476,21 @@ test("the activity search filters the live list in place", async () => {
 
 test("a log filter never blanks the playlist view", async () => {
   const { P, win } = state;
+  // The client route reads playlists, so the seeded first scan records a
+  // baseline and emits no track change. Seed a different stored snapshot so the
+  // next scan is a real diff, which is what gives the log a playlist change to
+  // offer and to show.
+  if (!state.playlistBaseline) {
+    const stored = await P.db.get("snapshots", PLAYLIST_ID);
+    if (stored) {
+      stored.uris = [pa.trackUri(7), pa.trackUri(8)];
+      await P.db.put("snapshots", stored);
+    }
+    await P.store.putWatch({ kind: "playlist", id: PLAYLIST_ID });
+    const booted = P.boot.instance();
+    if (booted) await booted.scheduler.runNow({ scope: "playlists", force: true });
+    state.playlistBaseline = true;
+  }
   const el = await mountController("log");
   // Filter the log by a change kind, then open a playlist from the log.
   const select = el.querySelector('[data-pwt="log-kind"]');

@@ -155,11 +155,15 @@
             { class: "pwt-heat-cells" },
             Array.from({ length: 24 }, function (_, hour) {
               var v = (data[d.day] || [])[hour] || 0;
-              var opacity = v ? 0.15 + (v / max) * 0.85 : 0.04;
+              // Translucent green keeps the dark background visible through the
+              // tile: empty cells read as faint outlines, full cells stay legible.
+              var style = v
+                ? { backgroundColor: "rgba(30, 215, 96, " + (0.25 + (v / max) * 0.75) + ")" }
+                : undefined;
               return h("span", {
                 key: hour,
                 class: "pwt-heat-cell",
-                style: { opacity: opacity },
+                style: style,
                 title: d.day + " " + (hour < 10 ? "0" + hour : hour) + ":00 · " + v + (v === 1 ? " play" : " plays"),
               });
             })

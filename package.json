@@ -15,5 +15,9 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/illocean/spotispy.git"
+  }
 }

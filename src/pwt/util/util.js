@@ -93,9 +93,15 @@
     return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear();
   }
 
+  /** 12-hour local time, e.g. "9:05 PM" / "12:30 AM" — no leading zero, padded
+   *  minutes, uppercase suffix. */
   function fmtTime(ts) {
     var d = new Date(ts);
-    return pad(d.getHours()) + ":" + pad(d.getMinutes());
+    var hours = d.getHours();
+    var suffix = hours >= 12 ? "PM" : "AM";
+    var hour12 = hours % 12;
+    if (hour12 === 0) hour12 = 12;
+    return hour12 + ":" + pad(d.getMinutes()) + " " + suffix;
   }
 
   function pad(n) {

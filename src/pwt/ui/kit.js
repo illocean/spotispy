@@ -134,9 +134,9 @@
       case "profile.follower.disappear":
         return safeDetail(r.detail) || kindLabel(r.kind);
       case "playlist.item.added":
-        return "added";
+        return safeDetail(r.detail) ? "added “" + safeDetail(r.detail) + "”" : "added";
       case "playlist.item.removed":
-        return "removed";
+        return safeDetail(r.detail) ? "removed “" + safeDetail(r.detail) + "”" : "removed";
       default:
         return safeDetail(r.detail) || kindLabel(r.kind);
     }
@@ -158,19 +158,17 @@
         alt: props.alt || "",
         style: style,
         seed: props.id || props.name,
-        fallbackText: (props.name || "?").slice(0, 1).toUpperCase(),
       });
     }
     return h(
       "span",
       {
         class: cls + " pwt-cover-fallback",
-        style: Object.assign(gradientStyle(props.id || props.name || "?"), style),
+        style: Object.assign(flatTileStyle(), style),
         title: props.alt || "",
         role: "img",
         "aria-label": props.alt || "cover",
-      },
-      (props.name || "?").slice(0, 1).toUpperCase()
+      }
     );
   }
 
@@ -196,17 +194,9 @@
     return h("button", attrs, props.label || props.children);
   }
 
-  /** Deterministic gradient from an id hash (used when no image URL, or when one fails). */
-  function gradientStyle(seed) {
-    return { background: gradientCss(seed) };
-  }
-
-  function gradientCss(seed) {
-    var u = util();
-    var rand = u.seedRandom(seed || "?");
-    var a = Math.floor(rand() * 360);
-    var b = (a + 140) % 360;
-    return "linear-gradient(140deg, hsl(" + a + " 52% 32%), hsl(" + b + " 48% 24%))";
+  /** A picture with no URL and no initials: one flat neutral tile. */
+  function flatTileStyle() {
+    return { backgroundColor: "var(--sp-surface-strong)" };
   }
 
   /** A URL is safe to inline in CSS once quotes and backslashes are escaped. */
@@ -227,7 +217,6 @@
     // that actually exists.
     var utilApi = root.PWT.util;
     var tiles = utilApi && utilApi.mosaicTiles ? utilApi.mosaicTiles(props.src) : null;
-    var gradient = gradientCss(props.seed || props.alt || "?");
     if (tiles && tiles.length >= 4) {
       var tileLayers = tiles.slice(0, 4).map(cssUrl);
       // The composite owns these four properties; keep this component's props.style for size/shape only.
@@ -238,10 +227,11 @@
       delete compositeExtra.backgroundRepeat;
       var composite = Object.assign(
         {
-          backgroundImage: tileLayers.join(", ") + ", " + gradient,
-          backgroundSize: "50% 50%, 50% 50%, 50% 50%, 50% 50%, cover",
-          backgroundPosition: "0% 0%, 100% 0%, 0% 100%, 100% 100%, center",
-          backgroundRepeat: "no-repeat, no-repeat, no-repeat, no-repeat, no-repeat",
+          backgroundColor: "var(--sp-surface-strong)",
+          backgroundImage: tileLayers.join(", "),
+          backgroundSize: "50% 50%, 50% 50%, 50% 50%, 50% 50%",
+          backgroundPosition: "0% 0%, 100% 0%, 0% 100%, 100% 100%",
+          backgroundRepeat: "no-repeat, no-repeat, no-repeat, no-repeat",
         },
         compositeExtra
       );
@@ -253,8 +243,7 @@
           title: props.title || props.alt || "",
           role: "img",
           "aria-label": props.alt || "image",
-        },
-        props.fallbackText || ""
+        }
       );
     }
     var single = props.src;
@@ -262,11 +251,9 @@
     var resolved = single && utilApi && utilApi.imageUrl ? utilApi.imageUrl(single) : single;
     var url = resolved ? cssUrl(resolved) : "";
     var style = Object.assign(
-      {
-        backgroundImage: url ? url + ", " + gradient : gradient,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      },
+      url
+        ? { backgroundColor: "var(--sp-surface-strong)", backgroundImage: url, backgroundSize: "cover", backgroundPosition: "center" }
+        : flatTileStyle(),
       props.style
     );
     return h(
@@ -277,8 +264,7 @@
         title: props.title || props.alt || "",
         role: "img",
         "aria-label": props.alt || "image",
-      },
-      props.fallbackText || ""
+      }
     );
   }
 
@@ -291,31 +277,32 @@
       src: props.src,
       alt: props.alt || "",
       seed: props.seed || props.alt,
-      fallbackText: props.fallbackText || "",
     });
   }
 
-  /** Deterministic gradient avatar from an id hash (used when no image URL). */
+  /** Avatar tile. No image URL renders a flat neutral tile — never letters. */
   function Avatar(props) {
+    // A caller that passes class expects it on the tile; silently dropping it
+    // made pwt-hero-avatar a no-op and left the hero art at default size.
+    var extra = props.class ? " " + props.class : "";
+    var size = props.small ? " pwt-avatar-sm" : props.large ? " pwt-avatar-lg" : "";
     if (props.src) {
       return h(Img, {
-        class: "pwt-avatar" + (props.small ? " pwt-avatar-sm" : props.large ? " pwt-avatar-lg" : ""),
+        class: "pwt-avatar" + size + extra,
         src: props.src,
         alt: props.alt || "",
         seed: props.id || props.name,
-        fallbackText: (props.name || "?").slice(0, 1).toUpperCase(),
       });
     }
     return h(
       "span",
       {
-        class: "pwt-avatar pwt-avatar-fallback" + (props.small ? " pwt-avatar-sm" : props.large ? " pwt-avatar-lg" : ""),
-        style: gradientStyle(props.id || props.name || "?"),
+        class: "pwt-avatar pwt-avatar-fallback" + size + extra,
+        style: flatTileStyle(),
         title: props.alt || "",
         role: "img",
         "aria-label": props.alt || "avatar",
-      },
-      (props.name || "?").slice(0, 1).toUpperCase()
+      }
     );
   }
 
@@ -431,6 +418,164 @@
     );
   }
 
+  /**
+   * A dropdown that does not use the native <select>.
+   *
+   * Spotify's renderer (CEF) frequently refuses to open a native select popup,
+   * and because onSet() re-loads the whole settings model asynchronously, any
+   * popup that IS open gets torn down by the re-render. So the list is drawn
+   * in-page: it is ordinary DOM that React owns, it survives a re-render, and it
+   * matches the dark theme exactly.
+   *
+   * Accessibility: the trigger is a real <button> with aria-haspopup="listbox",
+   * the popup is role="listbox" and each option is role="option" with
+   * aria-selected. Arrow keys move the highlight, Enter/Space commits, Escape
+   * closes — the keyboard behaviour a native select would have given.
+   */
+  function Select(props) {
+    var options = props.options || [];
+    var value = props.value;
+    var hook = root.PWT.react.hooks();
+    var openState = hook.useState(false);
+    var open = !!openState[0];
+    var setOpen = openState[1] || function () {};
+    var activeState = hook.useState(-1);
+    var active = activeState[0];
+    var setActive = activeState[1] || function () {};
+    var wrapRef = hook.useRef(null);
+
+    // Clicking anywhere outside the control must close the list. The blur
+    // handler only fires when focus actually moves, and clicking a
+    // non-focusable region does not move focus, so without this the popup
+    // hung open over the content.
+    hook.useEffect(
+      function () {
+        if (!open) return undefined;
+        var doc = typeof document !== "undefined" ? document : null;
+        if (!doc || typeof doc.addEventListener !== "function") return undefined;
+        var onDoc = function (ev) {
+          var wrap = wrapRef.current;
+          if (wrap && ev && ev.target && !wrap.contains(ev.target)) {
+            setOpen(false);
+            setActive(-1);
+          }
+        };
+        doc.addEventListener("mousedown", onDoc);
+        return function () {
+          doc.removeEventListener("mousedown", onDoc);
+        };
+      },
+      [open]
+    );
+
+    var current = null;
+    for (var i = 0; i < options.length; i++) {
+      if (String(options[i].value) === String(value)) current = options[i];
+    }
+    var shown = current ? current.label : (options[0] ? options[0].label : "—");
+
+    function commit(opt) {
+      setOpen(false);
+      setActive(-1);
+      if (props.onChange) props.onChange(opt.value);
+    }
+
+    function selectedIndex() {
+      for (var i = 0; i < options.length; i++) {
+        if (String(options[i].value) === String(value)) return i;
+      }
+      return -1;
+    }
+
+    function move(step) {
+      if (!options.length) return;
+      var from = active < 0 ? 0 : active + step;
+      if (from < 0) from = 0;
+      if (from > options.length - 1) from = options.length - 1;
+      setActive(from);
+    }
+
+    return h(
+      "span",
+      {
+        class: "pwt-select" + (open ? " is-open" : ""),
+        ref: wrapRef,
+        onBlur: function (ev) {
+          // Close when focus leaves the whole control, but not when it only
+          // moves between the trigger and an option inside the list.
+          var host = ev.currentTarget;
+          var to = ev.relatedTarget;
+          if (open && to && host && host.contains && !host.contains(to)) {
+            setOpen(false);
+            setActive(-1);
+          }
+        },
+      },
+      h(
+        "button",
+        {
+          type: "button",
+          class: "pwt-input pwt-select-trigger",
+          "aria-haspopup": "listbox",
+          "aria-expanded": open ? "true" : "false",
+          "data-pwt": props["data-pwt"],
+          onClick: function () {
+            var next = !open;
+            setOpen(next);
+            setActive(next ? selectedIndex() : -1);
+          },
+          onKeyDown: function (ev) {
+            var k = ev.key;
+            if (k === "ArrowDown" || k === "ArrowUp") {
+              ev.preventDefault();
+              if (!open) {
+                // Highlight the current value as the list opens, so the first
+                // Enter chooses rather than closing an empty highlight.
+                setOpen(true);
+                setActive(selectedIndex());
+                return;
+              }
+              move(k === "ArrowDown" ? 1 : -1);
+            } else if (k === "Enter" || k === " ") {
+              ev.preventDefault();
+              if (open && active >= 0 && options[active]) commit(options[active]);
+              else setOpen(!open);
+            } else if (k === "Escape") {
+              setOpen(false);
+              setActive(-1);
+            }
+          },
+        },
+        h("span", { class: "pwt-select-value" }, shown),
+        h("span", { class: "pwt-select-chevron", "aria-hidden": "true" }, "⌄")
+      ),
+      open
+        ? h(
+            "ul",
+            { class: "pwt-select-list", role: "listbox", tabIndex: "-1" },
+            options.map(function (opt, i) {
+              return h(
+                "li",
+                {
+                  key: String(opt.value),
+                  class: "pwt-select-option" + (String(opt.value) === String(value) ? " is-selected" : "") + (i === active ? " is-active" : ""),
+                  role: "option",
+                  "aria-selected": String(opt.value) === String(value) ? "true" : "false",
+                  // mousedown, not click: the trigger's blur would otherwise
+                  // close the list before the option receives the click.
+                  onMouseDown: function (ev) {
+                    ev.preventDefault();
+                    commit(opt);
+                  },
+                  onMouseEnter: function () { setActive(i); },
+                },
+                opt.label
+              );
+            })
+          )
+        : null
+    );
+  }
   /** Single-line inline countdown chip. */
   function Countdown(props) {
     var u = util();
@@ -462,5 +607,6 @@
     ChangeRow: ChangeRow,
     Unavailable: Unavailable,
     Countdown: Countdown,
+    Select: Select,
   };
 });

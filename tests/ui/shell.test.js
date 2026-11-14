@@ -90,6 +90,8 @@ test("the shell renders a navigation bar with every route and back/forward", asy
   const buttons = Array.from(el.querySelectorAll(".pwt-nav-btn"));
   assert.equal(buttons.length, 2, "back and forward buttons");
   assert.ok(buttons.every(function (b) { return !b.disabled; }), "both buttons are enabled when history is available");
+  const github = el.querySelector('a[data-pwt="nav-github"]');
+  assert.ok(github && github.getAttribute("href") === "https://github.com/illocean" && github.getAttribute("target") === "_blank" && /noopener/.test(github.getAttribute("rel") || ""), "the GitHub link is rendered with href, target _blank and noopener");
   try { el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
   el.remove();
 });
@@ -255,6 +257,58 @@ test("clicking the Activity tab routes to the activity view", async () => {
   assert.equal(win.Spicetify.Platform.History.location.pathname, "/Spotispy/activity", "the navigation landed in XPUI history");
 });
 
+test("the activity route falls back to the watched profile name when the feed and meta are silent", async () => {
+  const { P, win, fx } = state;
+  // Simulate the real failure mode: the feed carries no name and the
+  // activityName meta row (written from the feed) is empty too. The watched
+  // profile row still holds the display name.
+  await P.store.setMeta("activityName:" + USER_ID, { name: "", avatar: "", uri: "spotify:user:" + USER_ID });
+  const now = Date.now();
+  const dayKey = P.diff.dayKey(now);
+  await P.db.put("sessions", {
+    id: USER_ID + ":" + (now - 300000),
+    userId: USER_ID,
+    startedAt: now - 300000,
+    endedAt: now - 120000,
+    durationMs: 180000,
+    trackCount: 2,
+    looped: false,
+    skipped: false,
+    tracks: [fx.tracks[0].uri],
+  });
+  await P.db.put("dayTicks", { key: dayKey + ":" + USER_ID, day: dayKey, userId: USER_ID, ticks: [{ ts: now - 60000, hidden: false }] });
+  P.bus.activityRecords = [
+    {
+      userUri: "spotify:user:" + USER_ID,
+      userName: "",
+      avatar: "",
+      trackUri: fx.tracks[0].uri,
+      timestamp: now - 60000,
+      isPlaying: true,
+      contextUri: "",
+    },
+  ];
+  const el = mountController("activity");
+  await waitFor(function () { return el.querySelector(".pwt-activity"); }, "the activity view");
+  // Wait for the loaded content, not the loading skeleton (which also says
+  // "Listening"). The seeded fixture renders live, session and presence rows.
+  await waitFor(function () { return el.querySelector(".pwt-live-name"); }, "the live strip to render");
+  await waitFor(function () { return el.querySelector(".pwt-sess-name"); }, "the session card to render");
+  assert.ok(el.innerHTML.indexOf("Unknown listener") === -1, "no fallback name while a profile name exists: " + el.innerHTML.slice(0, 400));
+  assert.ok(el.innerHTML.indexOf("Ari") >= 0, "the watched profile name reaches the activity page");
+  const liveName = el.querySelector(".pwt-live-name");
+  assert.equal(liveName && liveName.textContent, "Ari", "the live strip shows the profile name");
+  const sessName = el.querySelector(".pwt-sess-name");
+  assert.equal(sessName && sessName.textContent, "Ari", "the session card shows the profile name");
+  const presenceName = el.querySelector(".pwt-presence-name");
+  assert.equal(presenceName && presenceName.textContent, "Ari", "the presence bar shows the profile name");
+  // The empty meta row is backfilled honestly from the profile.
+  const backfilled = await P.store.getMeta("activityName:" + USER_ID, null);
+  assert.ok(backfilled && backfilled.name === "Ari", "the meta row is backfilled with the profile name");
+  try { el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+  el.remove();
+});
+
 test("revisiting the current route reloads it instead of stuck on Loading", async () => {
   const { P, win } = state;
   win.Spicetify.Platform.History.reset();
@@ -281,15 +335,20 @@ test("the selection survives navigating away and back", async () => {
   // The roster is the watch list: the fixture must watch this person too.
   await P.store.putWatch({ kind: "profile", id: second });
   const el = mountController("profiles");
-  await waitFor(function () { return el.querySelector(".pwt-roster-row"); }, "the roster");
-  const rows = Array.from(el.querySelectorAll(".pwt-roster-row"));
-  assert.ok(rows.length >= 2, "both people are in the roster");
-  const target = rows.find(function (r) { return r.getAttribute("data-user") === second; });
-  assert.ok(target, "the second person is listed");
-  target.click();
+  await waitFor(function () { return el.querySelector('[data-pwt="profiles-picker"]'); }, "the profiles picker");
+  const trigger = el.querySelector('[data-pwt="profiles-picker"]');
+  trigger.click(); // opens the in-page listbox
+  await waitFor(function () { return el.querySelector(".pwt-select-option"); }, "the picker options");
+  const options = Array.from(el.querySelectorAll(".pwt-select-option"));
+  assert.ok(options.length >= 2, "both people are in the picker");
+  const target = options.find(function (o) { return o.textContent.indexOf("Bea") >= 0; });
+  assert.ok(target, "the second person is listed in the picker");
+  // The list commits on mousedown, not click — the trigger's blur would
+  // otherwise close the popup before an option receives the click.
+  target.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true }));
   await waitFor(function () {
-    const active = el.querySelector(".pwt-roster-row.is-active");
-    return active && active.getAttribute("data-user") === second;
+    const shown = el.querySelector('[data-pwt="profiles-picker"] .pwt-select-value');
+    return shown && shown.textContent.indexOf("Bea") >= 0;
   }, "the second person to be selected");
   const tab = Array.from(el.querySelectorAll(".pwt-nav-tab")).find(function (b) {
     return b.getAttribute("data-pwt-nav") === "overview";
@@ -300,10 +359,10 @@ test("the selection survives navigating away and back", async () => {
     return b.getAttribute("data-pwt-nav") === "profiles";
   });
   backTab.click();
-  await waitFor(function () { return el.querySelector(".pwt-roster-row"); }, "the profiles view again");
-  const active = el.querySelector(".pwt-roster-row.is-active");
-  assert.ok(active, "a person is still selected");
-  assert.equal(active.getAttribute("data-user"), second, "the same person is still selected");
+  await waitFor(function () { return el.querySelector('[data-pwt="profiles-picker"]'); }, "the profiles view again");
+  const shown = el.querySelector('[data-pwt="profiles-picker"] .pwt-select-value');
+  assert.ok(shown, "a person is still selected");
+  assert.ok(shown.textContent.indexOf("Bea") >= 0, "the same person is still selected");
   await P.store.removeWatch("profile", second);
   await P.db.del("profiles", second);
 });

@@ -3,7 +3,8 @@
  * Spotispy â€” playlist scan stage.
  *
  * For each watched playlist: fetch contents through the source chain
- * (Web API via Cosmos -> embed JSON -> web-player GraphQL -> last-ditch core rows),
+ * (client playlist API -> Web API via Cosmos -> embed JSON -> web-player
+ * GraphQL -> last-ditch core rows),
  * decide with the pure differ whether anything is loggable, and return one atomic
  * commit plan. A failed fetch writes nothing (proposal Â§4.2).
  */
@@ -17,6 +18,10 @@
 
   function P() {
     return root.PWT;
+  }
+
+  function U() {
+    return P().util;
   }
 
   // Resolved error-body detection/classification/wording is shared (net.js) so
@@ -34,11 +39,14 @@
     return net && net.bodyErrorMessage ? net.bodyErrorMessage(prefix, be) : prefix + ": error";
   }
 
-  // Source chain, cheapest/most-reliable first. embed JSON needs no session;
-  // pathfinder is the public web-player GraphQL; the in-client sp:// core-playlist
-  // resolver is unregistered on current builds (-1 Resolver not found), so it stays
-  // only as a last-ditch attempt.
-  var CFG = { sourceOrder: ["api", "embed", "pathfinder", "core"] };
+  // Source chain, cheapest/most-reliable first. The client's own playlist API
+  // (Platform.PlaylistAPI) is first: verified live on 1.3.9.2055 that the
+  // renderer cannot reach api.spotify.com at all, while this object answers
+  // in-process. Then the HTTP chain: embed JSON needs no session; pathfinder is
+  // the public web-player GraphQL; the in-client sp:// core-playlist resolver is
+  // unregistered on current builds (-1 Resolver not found), so it stays only as a
+  // last-ditch attempt.
+  var CFG = { sourceOrder: ["client", "api", "embed", "pathfinder", "core"] };
 
   /**
    * Fetch one playlist's contents, preferring the client's own route and
@@ -54,7 +62,32 @@
 
     for (var i = 0; i < CFG.sourceOrder.length; i++) {
       var name = CFG.sourceOrder[i];
+      // A source whose spec cannot even be built (no PlaylistAPI on this build)
+      // is not a failure to report: it is a route that does not exist here.
+      if (name === "client" && !sources.SOURCES.clientContents.fn(id)) continue;
       try {
+        if (name === "client") {
+          var cliRes = await net.call(sources.SOURCES.clientContents.fn(id));
+          var cliParsed = sources.SOURCES.clientContents.parse(cliRes);
+          // A short read is a partial read: `totalLength` counts every item, so
+          // reporting it as complete would let a second scan diff a truncated
+          // snapshot into a mass removal.
+          if (!cliParsed.uris.length) throw new Error("client playlist route returned no track URIs");
+          var cliTotal = cliParsed.total == null ? cliParsed.uris.length : cliParsed.total;
+          var cliCapped = cliParsed.uris.length < cliTotal;
+          attempts.push({ source: "client", ok: true, capped: cliCapped });
+          // The same read carries each track's title, artists, album and cover;
+          // hand them to the caller so the cache is filled without a second pass
+          // (on this build there is no second pass that works).
+          return {
+            uris: cliParsed.uris,
+            added: cliParsed.added,
+            tracks: cliParsed.tracks,
+            total: cliTotal,
+            source: "client",
+            capped: cliCapped,
+          };
+        }
         if (name === "api") {
           var total = null;
           var urisA = [];
@@ -111,9 +144,14 @@
             throw coreErr;
           }
           var parsed = sources.SOURCES.coreRows.parse(res);
-          if (!parsed.uris.length && parsed.total) throw new Error("core rows returned no track URIs");
+          if (!parsed.uris.length) {
+            // A core read with no tracks is not a successful empty playlist: on
+            // a build where the resolver answers empty, returning [] would let a
+            // second scan diff a zero snapshot into a mass removal.
+            throw new Error("core rows returned no track URIs");
+          }
           attempts.push({ source: "core", ok: true });
-          return { uris: parsed.uris, added: parsed.added, total: parsed.total, source: "core", capped: false };
+          return { uris: parsed.uris, added: parsed.added, total: parsed.total || parsed.uris.length, source: "core", capped: false };
         }
         if (name === "pathfinder") {
           var metaSpec = sources.SOURCES.pathfinder.fn(id, {});
@@ -191,15 +229,47 @@
   async function fetchMeta(id) {
     var pwt = P();
     var out = {};
-    // 1) Web API â€” proven through Cosmos on this client. A rate-limited answer
-    //    arrives as {code,message}, which must not be parsed into an empty name.
+    // 1) The client's own playlist API: the one route that still answers on
+    //    current desktop builds (verified live on 1.3.9.2055 that the renderer
+    //    cannot reach api.spotify.com at all). Its answer is the real playlist
+    //    object, so an absent field here means the playlist has none.
     try {
-      var api = await pwt.net.call(pwt.sources.SOURCES.apiPlaylist.fn(id));
-      if (!bodyError(api)) out = pwt.sources.SOURCES.apiPlaylist.parse(api);
-    } catch (e) {
-      /* fall through */
+      var clientSpec = pwt.sources.SOURCES.clientMeta.fn(id);
+      if (clientSpec) {
+        var clientRes = await pwt.net.call(clientSpec);
+        if (!bodyError(clientRes)) {
+          var parsedClient = pwt.sources.SOURCES.clientMeta.parse(clientRes);
+          // Never let an empty field from a later source erase a real value.
+          for (var ck in parsedClient) {
+            if (!Object.prototype.hasOwnProperty.call(parsedClient, ck)) continue;
+            if (parsedClient[ck] == null || parsedClient[ck] === "") continue;
+            out[ck] = parsedClient[ck];
+          }
+        }
+      }
+    } catch (eClient) {
+      /* fall through to the HTTP chain */
     }
-    // 2) wg core-playlist metadata, if the resolver exists.
+    // 2) Web API, where the client can reach api.spotify.com at all. A
+    //    rate-limited answer arrives as {code,message} and is never parsed as
+    //    metadata (an empty name is not a name).
+    if (!out.name || !out.coverUrl) {
+      try {
+        var api = await pwt.net.call(pwt.sources.SOURCES.apiPlaylist.fn(id));
+        if (!bodyError(api)) {
+          var parsedApi = pwt.sources.SOURCES.apiPlaylist.parse(api);
+          for (var ak in parsedApi) {
+            if (!Object.prototype.hasOwnProperty.call(parsedApi, ak)) continue;
+            if (out[ak] != null && out[ak] !== "") continue;
+            if (parsedApi[ak] == null || parsedApi[ak] === "") continue;
+            out[ak] = parsedApi[ak];
+          }
+        }
+      } catch (eApi) {
+        /* fall through */
+      }
+    }
+    // 3) wg core-playlist metadata, if the resolver exists.
     if (!out.name) {
       try {
         var core = await pwt.net.call(pwt.sources.SOURCES.coreMeta.fn(id));
@@ -217,7 +287,7 @@
         /* fall through */
       }
     }
-    // 3) The profile view lists a user's public playlists with name + image_url
+    // 4) The profile view lists a user's public playlists with name + image_url
     //    (spotify:mosaic: refs). It works whenever the profile route works, even
     //    while the Web API is rate limited.
     if (!out.name || !out.coverUrl) {
@@ -278,7 +348,7 @@
    * @param {number} now
    * @returns {{ events: object[], snapshot: object, playlist: object, counts: object }}
    */
-  function evaluate(row, snapshot, fresh, meta, now) {
+  function evaluate(row, snapshot, fresh, meta, now, trackRows) {
     var pwt = P();
     var diff = pwt.diff;
     var ev = pwt.events;
@@ -304,6 +374,7 @@
       for (var a = 0; a < plan.added.length; a++) {
         var uri = plan.added[a];
         var add = fresh.added && fresh.added[uri] ? fresh.added[uri] : null;
+        var addedRow = trackRows && trackRows[uri] ? trackRows[uri] : null;
         events.push(
           ev.makeEvent(
             {
@@ -312,7 +383,9 @@
               kind: "playlist.item.added",
               uri: uri,
               title: title,
-              detail: trackLabel(uri),
+              // The row's own title is a label; the uri stays the identity (the
+              // "open" action needs it) and never reaches the detail column.
+              detail: (addedRow && addedRow.title) || "",
               sourceDate: add && add.addedAt && add.addedAt > 0 ? add.addedAt : undefined,
               extra: add && add.addedBy ? { addedBy: add.addedBy } : undefined,
             },
@@ -321,6 +394,7 @@
         );
       }
       for (var r = 0; r < plan.removed.length; r++) {
+        var removedRow = trackRows && trackRows[plan.removed[r]] ? trackRows[plan.removed[r]] : null;
         events.push(
           ev.makeEvent(
             {
@@ -329,7 +403,7 @@
               kind: "playlist.item.removed",
               uri: plan.removed[r],
               title: title,
-              detail: trackLabel(plan.removed[r]),
+              detail: (removedRow && removedRow.title) || "",
             },
             now
           )
@@ -390,11 +464,6 @@
       held: plan.action === "hold",
       reseeded: plan.action === "reseed",
     };
-  }
-
-  /** Display label for a track URI until metadata is cached. */
-  function trackLabel(uri) {
-    return String(uri || "").replace(/^spotify:track:/, "");
   }
 
   /**
@@ -482,12 +551,32 @@
           meta = meta || null;
         }
       }
-      var evaluated = evaluate(row, snapshot, fresh, meta, Date.now());
+      var evaluated = evaluate(row, snapshot, fresh, meta, Date.now(), fresh.tracks);
+      // The playlist read already carried every track's title, artists, album and
+      // cover (the client route does). Write them to the shared track cache in the
+      // same commit, so the playlist view shows real rows instead of "Unknown
+      // track" while the separate metadata pass catches up.
+      var trackRows = fresh.tracks || {};
+      var trackPuts = [];
+      for (var tk in trackRows) {
+        if (!Object.prototype.hasOwnProperty.call(trackRows, tk)) continue;
+        var tr = trackRows[tk];
+        var util = U();
+        trackPuts.push([
+          "tracks",
+          {
+            uri: tr.uri,
+            title: tr.title,
+            artist: tr.artist,
+            album: tr.album,
+            art: util && util.imageUrl ? util.imageUrl(tr.art) : tr.art,
+            durationMs: tr.durationMs || 0,
+            fetchedAt: Date.now(),
+          },
+        ]);
+      }
       await store.commitScan({
-        puts: [
-          ["playlists", evaluated.playlist],
-          ["snapshots", evaluated.snapshot],
-        ],
+        puts: [["playlists", evaluated.playlist], ["snapshots", evaluated.snapshot]].concat(trackPuts),
         changes: evaluated.events,
       });
       // Remember what this playlist holds, so its tracks get real titles and
@@ -580,6 +669,18 @@
   async function fetchTrackRow(deps, uri) {
     var pwt = P();
     var net = (deps && deps.net) || pwt.net;
+    // A row written by a client playlist read already has the real title,
+    // artists, album and cover: use it instead of asking again (on this build
+    // every network route for a single track is dead).
+    var db0 = (deps && deps.db) || pwt.db;
+    if (db0 && db0.get) {
+      try {
+        var known = await db0.get("tracks", uri);
+        if (known && known.title) return known;
+      } catch (eKnown) {
+        /* fall through to the network */
+      }
+    }
     // 1) The client's own GraphQL.
     try {
       var spec = pwt.sources.ENDPOINTS.trackViaClient(uri);
@@ -673,6 +774,5 @@
     evaluate: evaluate,
     scanPlaylists: scanPlaylists,
     fetchTrackMetadata: fetchTrackMetadata,
-    trackLabel: trackLabel,
   };
 });

@@ -594,7 +594,7 @@
           var states = {};
           var allStates = (await db.getAll("activityState")) || [];
           for (var s = 0; s < allStates.length; s++) states[allStates[s].userId] = allStates[s];
-          var sessions = await store.sessionsFor(null, 30);
+          var sessions = await store.sessionsFor(null, 100);
           var plays = await store.playsFor(null, 0, 5000);
           var tracksCache = {};
           for (var pp = 0; pp < plays.length; pp++) {
@@ -613,19 +613,72 @@
             }
           }
           var activityMeta = {};
+          var metaSeen = {};
+          var metaEmpty = {};
           try {
             var metaRows = (await db.getAll("meta")) || [];
             for (var mm = 0; mm < metaRows.length; mm++) {
               if (metaRows[mm].key && metaRows[mm].key.indexOf("activityName:") === 0) {
-                activityMeta[metaRows[mm].key.slice("activityName:".length)] = {
-                  name: profileName(metaRows[mm].value && metaRows[mm].value.name) || "",
+                var metaId = metaRows[mm].key.slice("activityName:".length);
+                var metaName = profileName(metaRows[mm].value && metaRows[mm].value.name) || "";
+                activityMeta[metaId] = {
+                  name: metaName,
                   avatar: (metaRows[mm].value && metaRows[mm].value.avatar) || "",
                 };
+                metaSeen[metaId] = true;
+                if (!metaName) metaEmpty[metaId] = true;
               }
             }
           } catch (e) {
             /* best effort */
           }
+          // Name fallback chain: the feed (reaching this route via the meta
+          // cache) is often silent, so the watched-profile rows — which do
+          // hold the display name — fill the gap. Only names that survive the
+          // id-shape guard are used; nothing is invented.
+          var pfRows = [];
+          try {
+            pfRows = (await db.getAll("profiles")) || [];
+          } catch (eProfiles) {
+            pfRows = [];
+          }
+          var profileById = {};
+          for (var ppi = 0; ppi < pfRows.length; ppi++) {
+            var pfRow = pfRows[ppi];
+            if (!pfRow || !pfRow.id) continue;
+            var pfName = profileName(pfRow.name);
+            var pfAvatar = pfRow.avatarUrl || "";
+            if (!pfName && !pfAvatar) continue;
+            profileById[pfRow.id] = { name: pfName, avatar: pfAvatar };
+          }
+          var backfillIds = [];
+          for (var pfId in profileById) {
+            if (!Object.prototype.hasOwnProperty.call(profileById, pfId)) continue;
+            var pfProf = profileById[pfId];
+            if (!pfProf.name) continue; // no usable name; stay honest
+            var pfCur = activityMeta[pfId];
+            if (pfCur && pfCur.name) continue; // feed/meta name wins
+            activityMeta[pfId] = {
+              name: pfProf.name,
+              // Keep the cached meta avatar if there is one; otherwise the
+              // profile's. Same raw form the rest of activityMeta uses —
+              // the views apply imageUrl().
+              avatar: (pfCur && pfCur.avatar) || pfProf.avatar || "",
+            };
+            if (!metaSeen[pfId] || metaEmpty[pfId]) backfillIds.push(pfId);
+          }
+          // In-memory only: the live records get the same treatment so the
+          // strip and the now-playing hero never render a bare id.
+          records = records.map(function (rec) {
+            if (!rec) return rec;
+            var rfid = String(rec.userUri || "").replace(/^spotify:user:/, "");
+            var rprof = rfid ? profileById[rfid] : null;
+            if (!rprof) return rec;
+            var patch = null;
+            if (!rec.userName && rprof.name) patch = { userName: rprof.name };
+            if (!rec.avatar && rprof.avatar) patch = Object.assign(patch || {}, { avatar: rprof.avatar });
+            return patch ? Object.assign({}, rec, patch) : rec;
+          });
           // Meta art fills gaps: live records, session names, track caches.
           var artNeeded = [];
           for (var an = 0; an < records.length; an++) {
@@ -652,6 +705,23 @@
           for (var an3 in activityMeta) {
             if (activityMeta[an3] && !activityMeta[an3].avatar && artMapA["spotify:user:" + an3]) {
               activityMeta[an3] = Object.assign({}, activityMeta[an3], { avatar: artMapA["spotify:user:" + an3] });
+            }
+          }
+          // Bounded, honest backfill: a name resolved from db.profiles for an
+          // id with no meta row (or an empty one) is written back so the watch
+          // list and the art sweep stay consistent. Ids with nothing to
+          // resolve are left untouched.
+          for (var bf = 0; bf < backfillIds.length; bf++) {
+            var bfMeta = activityMeta[backfillIds[bf]];
+            if (!bfMeta || !bfMeta.name) continue;
+            try {
+              await store.setMeta("activityName:" + backfillIds[bf], {
+                name: bfMeta.name,
+                avatar: bfMeta.avatar || "",
+                uri: "spotify:user:" + backfillIds[bf],
+              });
+            } catch (eBackfill) {
+              /* best effort; rendering does not depend on the write */
             }
           }
           for (var tk3 in tracksCache) {
@@ -682,7 +752,6 @@
             live: vm.liveStrip(records, states, now, liveTracks),
             sessions: vm.sessionCards(sessions, tracksCache, activityMeta),
             heat: vm.heatmap(plays, now),
-            contexts: vm.topContexts(plays, 8),
             presence: vm.presenceBars(tickRows, pwt.diff.dayKey(now), now, activityMeta),
           };
         }

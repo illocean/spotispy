@@ -14,6 +14,8 @@ const path = require("path");
 
 const ROOT = path.join(__dirname, "..", "..");
 
+const pa = require("./playlist-api.js");
+
 const ART = {
   avatarUser: "https://image-cdn-ak.spotifycdn.com/image/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
   avatarFriend: "https://image-cdn-ak.spotifycdn.com/image/cafebabecafebabecafebabecafebabecafebabe",
@@ -145,6 +147,11 @@ function makeHistory(calls) {
 function stubSpicetify(win, calls) {
   const React = require("react");
   const ReactDOMClient = require("react-dom/client");
+  // Older tests build their own `calls` literal; keep the PlaylistAPI log present
+  // either way so the stub never throws on a missing array.
+  calls.playlistApi = calls.playlistApi || { getContents: [], getMetadata: [] };
+  // The modules read the client through `globalThis.Spicetify` or the jsdom
+  // window's; both must be the stub, or a route silently reads as "not present".
   const stub = {
     React: React,
     ReactDOM: ReactDOMClient,
@@ -159,7 +166,23 @@ function stubSpicetify(win, calls) {
         return win.localStorage.setItem(k, v);
       },
     },
-    Platform: { History: makeHistory(calls) },
+    Platform: {
+      History: makeHistory(calls),
+      PlaylistAPI: {
+        getContents: async function (uri, offset, limit) {
+          calls.playlistApi.getContents.push({ uri: uri, offset: offset, limit: limit });
+          const h = calls.handlers.find(function (x) { return x.test(uri); });
+          if (!h || !h.contents) throw new Error("no playlist contents for " + uri);
+          return typeof h.contents === "function" ? h.contents(uri, offset, limit) : h.contents;
+        },
+        getMetadata: async function (uri) {
+          calls.playlistApi.getMetadata.push({ uri: uri });
+          const h = calls.handlers.find(function (x) { return x.test(uri); });
+          if (!h || !h.meta) throw new Error("no playlist metadata for " + uri);
+          return typeof h.meta === "function" ? h.meta(uri) : h.meta;
+        },
+      },
+    },
     CosmosAsync: {
       get: async function (url) {
         calls.get.push(url);
@@ -311,6 +334,39 @@ function stubHandlers(fx, calls) {
   calls.handlers.push({
     test: function (u) { return u === "https://api.spotify.com/v1/me"; },
     value: function () { return { id: "harness-me", display_name: "Harness Me" }; },
+  });
+  // The client's own playlist route (what Spotispy actually reads through, and
+  // what the self-test probes) answers for the seeded playlist.
+  // The client route reads the playlist's own items, each carrying its title,
+  // artists, album and cover. These are what the scan writes to the track cache,
+  // so the playlist view renders real rows instead of "Unknown track".
+  pa.addPlaylist(calls, {
+    id: PLAYLIST_ID,
+    name: "Night Drive",
+    cover: ART.cover,
+    tracks: [
+      {
+        uri: fx.tracks[0].uri,
+        addedAt: new Date(fx.T0).toISOString(),
+        addedBy: "spotify",
+      },
+      {
+        uri: fx.tracks[1].uri,
+        addedAt: new Date(fx.T0 + 1000).toISOString(),
+        addedBy: "spotify",
+      },
+      {
+        uri: fx.tracks[2].uri,
+        addedAt: new Date(fx.T0 + 2000).toISOString(),
+        addedBy: "spotify",
+      },
+    ],
+  });
+  pa.addPlaylist(calls, {
+    id: PLAYLIST_ID_2,
+    name: "Day Drive",
+    cover: ART.art1,
+    tracks: [{ uri: fx.tracks[0].uri, addedAt: new Date(fx.T0).toISOString(), addedBy: "spotify" }],
   });
 }
 

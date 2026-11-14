@@ -94,7 +94,6 @@
 /* ---------- global focus rule ---------- */
 .pwt-btn:focus-visible,
 .pwt-chip:focus-visible,
-.pwt-roster-row:focus-visible,
 .pwt-user-card-main:focus-visible,
 .pwt-link-btn:focus-visible,
 .pwt-ribbon-retry:focus-visible,
@@ -133,7 +132,6 @@ button.pwt-toggle:focus-visible {
   background: var(--sp-green);
   border-color: var(--sp-green);
   color: #062b16;
-  box-shadow: 0 2px 12px rgba(30, 215, 96, 0.28);
 }
 .pwt-btn-primary:hover { background: var(--sp-green-hover); border-color: var(--sp-green-hover); color: #062b16; }
 .pwt-btn-danger { color: #ff9aa4; border-color: rgba(241, 94, 108, 0.45); background: transparent; }
@@ -216,8 +214,8 @@ button.pwt-toggle:focus-visible {
 }
 .pwt-kpis-tight .pwt-stat,
 .pwt-kpi-strip .pwt-stat {
-  flex: 1 1 0;
-  min-width: 96px;
+  flex: 1 1 128px;
+  min-width: 0;
   padding: 12px 16px;
   background: transparent;
   border: none;
@@ -261,13 +259,70 @@ button.pwt-toggle:focus-visible {
 .pwt-input::placeholder { color: var(--sp-faint); }
 .pwt-input:focus { outline: 2px solid var(--sp-green); outline-offset: 1px; border-color: transparent; }
 .pwt-input-sm { height: 30px; padding: 0 10px; font-size: 11px; }
-select.pwt-input { appearance: auto; }
+/* ---------- select (in-page listbox) ----------
+   Spotify's CEF renderer frequently refuses to open a native <select> popup,
+   and an async model reload tears any open popup down. This list is ordinary
+   DOM React owns, so it survives a re-render and matches the dark theme. */
+.pwt-select { position: relative; display: block; }
+.pwt-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-ui);
+}
+.pwt-select-trigger:hover { border-color: var(--sp-line-strong); background: var(--sp-surface-hover); }
+.pwt-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-select-chevron { flex: 0 0 auto; color: var(--sp-sub); font-size: 12px; line-height: 1; transition: transform 0.16s ease; }
+.pwt-select.is-open .pwt-select-chevron { transform: rotate(180deg); color: var(--sp-green); }
+.pwt-select-list {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--sp-bg-deep);
+  border: 1px solid var(--sp-line-strong);
+  border-radius: var(--sp-radius-sm);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+.pwt-select-option {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--sp-text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pwt-select-option.is-active { background: var(--sp-surface-hover); }
+.pwt-select-option.is-selected { color: var(--sp-green); font-weight: 700; }
+/* Compact variant, matching .pwt-input-sm. */
+.pwt-select-sm > .pwt-select-trigger { height: 30px; padding: 0 10px; font-size: 11px; }
+.pwt-select-sm .pwt-select-list { min-width: 140px; }
 .pwt-error { color: var(--sp-danger); font-size: 11px; margin-top: 8px; }
 
 /* ---------- grids / split view ---------- */
 .pwt-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-.pwt-split { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; margin: 12px var(--sp-page); }
-.pwt-split-left, .pwt-split-right { min-width: 0; }
+/* Activity's lower deck: presence spans the width it needs and the
+   narrower cards pack beside it, so wide screens are not half empty. */
+.pwt-deck { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; align-items: start; margin: 12px var(--sp-page); }
+.pwt-deck > .pwt-section { margin: 0; min-width: 0; }
+.pwt-deck-wide { grid-column: 1 / -1; }
+/* Profiles: the roster picker plus a search box that typeaheads into it, on
+   the right end of the view head, leaving the detail the full width below. */
+.pwt-profiles-controls { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; }
+.pwt-profiles-picker { width: 260px; max-width: 100%; flex: 0 0 auto; min-width: 0; }
+.pwt-profiles-search { width: 200px; max-width: 100%; }
 .pwt-view-head { display: flex; align-items: center; gap: 12px; padding: 16px var(--sp-page) 0; }
 .pwt-view-head-split { justify-content: space-between; }
 .pwt-activity-meta { margin: 8px var(--sp-page) 4px; color: var(--sp-sub); font-size: 11px; }
@@ -320,12 +375,15 @@ select.pwt-input { appearance: auto; }
 .pwt-chip-name { font-size: 12px; color: var(--sp-sub); font-weight: 700; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-chip.is-active .pwt-chip-name { color: var(--sp-text); }
 .pwt-chip-count { font-size: 10.5px; font-weight: 800; color: var(--sp-green); background: var(--sp-green-soft); border-radius: 999px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
+.pwt-chip-avatar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- profile header: flat card ---------- */
 .pwt-user-section { margin: 16px var(--sp-page) 0; }
 .pwt-user-head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  /* minmax(0,1fr) so the text column can shrink below its content instead of
+     pushing the actions out of the pane. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 18px;
   padding: 16px 18px;
@@ -334,6 +392,9 @@ select.pwt-input { appearance: auto; }
   border-radius: 14px;
 }
 .pwt-user-head .pwt-avatar { width: 88px; height: 88px; border-radius: 14px; object-fit: cover; font-size: 28px; }
+/* Fluid hero art: scales with the pane instead of a fixed inline size that
+   forces the text column to overflow. */
+.pwt-avatar.pwt-hero-avatar { width: clamp(52px, 14vw, 88px); height: clamp(52px, 14vw, 88px); border-radius: 14px; font-size: clamp(16px, 4.5vw, 28px); flex: 0 0 auto; }
 .pwt-user-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .pwt-user-title .pwt-h2 { font-size: 22px; }
 .pwt-user-name-row { display: flex; align-items: center; gap: 10px; }
@@ -357,7 +418,7 @@ select.pwt-input { appearance: auto; }
 .pwt-user-card:hover { background: var(--sp-surface-hover); border-color: var(--sp-line-strong); }
 .pwt-user-card-main {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: clamp(44px, 9vw, 64px) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   background: none;
@@ -382,7 +443,7 @@ select.pwt-input { appearance: auto; }
 .pwt-avatar { width: 40px; height: 40px; object-fit: cover; border-radius: var(--sp-radius-sm); background: var(--sp-surface-strong); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; color: var(--sp-text); }
 .pwt-avatar-sm { width: 28px; height: 28px; font-size: 11px; }
 .pwt-avatar-lg { width: 88px; height: 88px; font-size: 28px; border-radius: 14px; }
-.pwt-avatar-fallback, .pwt-cover-fallback { color: #ece7dd; }
+.pwt-avatar-fallback, .pwt-cover-fallback { background: var(--sp-surface-strong); }
 .pwt-img-fallback { display: inline-flex; align-items: center; justify-content: center; color: rgba(255, 255, 255, 0.85); }
 .pwt-cover { object-fit: cover; background: var(--sp-surface-strong); border-radius: var(--sp-radius-sm); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }
 .pwt-cover-sm { border-radius: 5px; }
@@ -390,30 +451,6 @@ select.pwt-input { appearance: auto; }
 .pwt-thumb-sm { width: 26px; height: 26px; border-radius: 6px; }
 .pwt-thumb-lg { width: 48px; height: 48px; }
 .pwt-change-thumb { width: 36px; height: 36px; border-radius: 9px; object-fit: cover; background: var(--sp-inset); }
-
-/* ---------- roster ---------- */
-.pwt-roster { display: flex; flex-direction: column; gap: 6px; }
-.pwt-roster-row {
-  display: grid;
-  grid-template-columns: 36px 1fr auto;
-  gap: 12px;
-  align-items: center;
-  background: var(--sp-surface);
-  border: 1px solid var(--sp-line);
-  border-radius: var(--sp-radius-sm);
-  padding: 8px 10px;
-  text-align: left;
-  color: var(--sp-text);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.pwt-roster-row:hover { background: var(--sp-surface-hover); }
-.pwt-roster-row.is-active { border-color: rgba(30, 215, 96, 0.45); }
-.pwt-roster-row .pwt-avatar { width: 36px; height: 36px; }
-.pwt-roster-name { font-weight: 700; font-size: 12px; display: block; }
-.pwt-roster-meta { color: var(--sp-sub); font-size: 10.5px; margin-top: 1px; display: block; font-variant-numeric: tabular-nums; }
-.pwt-roster-side { display: flex; align-items: center; gap: 8px; }
 
 /* ---------- change rows: flat timeline rows ---------- */
 .pwt-change {
@@ -502,18 +539,62 @@ select.pwt-input { appearance: auto; }
 .pwt-spark-line { stroke: var(--sp-green); stroke-width: 1.8; }
 .pwt-chart { display: block; }
 .pwt-bars { display: flex; flex-direction: column; gap: 5px; }
-.pwt-bar-row { display: grid; grid-template-columns: minmax(90px, 1fr) 3fr auto; gap: 10px; align-items: center; font-size: 11px; }
+.pwt-bar-row { display: grid; grid-template-columns: minmax(72px, 1fr) minmax(0, 3fr) auto; gap: 10px; align-items: center; font-size: 11px; }
 .pwt-bar-label { color: var(--sp-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-bar-track { background: var(--sp-surface-strong); border-radius: 2px; height: 5px; overflow: hidden; }
 .pwt-bar-fill { display: block; height: 100%; background: var(--sp-green); border-radius: 2px; }
 .pwt-bar-value { font-variant-numeric: tabular-nums; color: var(--sp-sub); font-size: 10.5px; }
 
-.pwt-heatmap { display: flex; flex-direction: column; gap: 4px; }
-.pwt-heat-row { display: grid; grid-template-columns: 46px 1fr; gap: 8px; align-items: center; }
+.pwt-heatmap { display: flex; flex-direction: column; gap: 5px; width: 100%; }
+.pwt-heat-row { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 8px; align-items: center; }
+.pwt-heat-cells { min-width: 0; }
 .pwt-heat-day { color: var(--sp-sub); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .pwt-heat-cells { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; }
-.pwt-heat-cell { background: var(--sp-green); border-radius: 2px; height: 13px; opacity: 0.9; }
+.pwt-heat-cell { background: rgba(255, 255, 255, 0.055); border-radius: 2px; height: 18px; }
 
+/* ---------- accordion (settings) ---------- */
+.pwt-acc { border: 1px solid var(--sp-line); border-radius: var(--sp-radius); background: var(--sp-surface); margin-top: 10px; overflow: hidden; }
+.pwt-acc.is-open { background: transparent; }
+.pwt-acc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-ui);
+  color: var(--sp-text);
+}
+.pwt-acc-head:hover { background: var(--sp-surface-hover); }
+.pwt-acc-head:focus-visible { outline: 2px solid var(--sp-green); outline-offset: -2px; }
+.pwt-acc-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sp-text); flex: 0 0 auto; }
+.pwt-acc-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.pwt-acc-chevron { flex: 0 0 auto; color: var(--sp-sub); font-size: 14px; line-height: 1; transition: transform 0.18s ease; }
+.pwt-acc.is-open .pwt-acc-chevron { transform: rotate(180deg); color: var(--sp-green); }
+.pwt-acc-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+/* Collapsing must actually collapse: without this the body kept its full
+   height and the header looked open regardless of state.
+   visibility:hidden also removes the controls from the tab order and from
+   the accessibility tree, so a collapsed section is not silently focusable. */
+.pwt-acc:not(.is-open) .pwt-acc-body { display: none; }
+.pwt-acc-body > .pwt-section-head { margin-bottom: 0; }
+.pwt-settings .pwt-acc,
+.pwt-settings .pwt-acc-body,
+.pwt-settings .pwt-field,
+.pwt-settings .pwt-field-label { min-width: 0; }
+.pwt-settings .pwt-grid-2 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.pwt-settings .pwt-input { max-width: 100%; }
+.pwt-settings .pwt-add { gap: 8px; }
+.pwt-settings .pwt-add .pwt-input { flex: 1 1 200px; min-width: 0; }
+.pwt-settings .pwt-actions .pwt-btn,
+.pwt-settings .pwt-add .pwt-btn { flex: 0 1 auto; }
+.pwt-settings .pwt-toggles { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.pwt-settings .pwt-watch-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.pwt-settings .pwt-watch-row .pwt-btn { flex: 0 0 auto; }
+.pwt-acc-body .pwt-kpis { margin: 0; }
 /* ---------- activity ---------- */
 .pwt-live-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x mandatory; }
 .pwt-live-card {
@@ -535,23 +616,77 @@ select.pwt-input { appearance: auto; }
 .pwt-live-main .pwt-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-live-card > .pwt-tiny { white-space: nowrap; }
 .pwt-live-state { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; color: var(--sp-green); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 800; }
-.pwt-sessions { display: flex; flex-direction: column; gap: 8px; }
-.pwt-session-card { background: var(--sp-surface); border: 1px solid var(--sp-line); border-radius: var(--sp-radius); padding: 10px 14px; }
-.pwt-session-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
-.pwt-session-stats { display: flex; gap: 8px; margin-bottom: 6px; }
-.pwt-session-tracks { margin: 0; padding-left: 4px; list-style: none; max-height: 150px; overflow: auto; }
+/* ---------- session list (activity) ---------- */
+/* Grouped by local day. The rows are buttons that toggle an inline track
+   list; hairline borders, quiet surfaces, green only for focus. */
+.pwt-sess-list { display: flex; flex-direction: column; gap: 18px; }
+.pwt-sess-group { display: flex; flex-direction: column; gap: 8px; }
+.pwt-sess-day { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 800; color: var(--sp-sub); padding: 2px 2px 6px; border-bottom: 1px solid var(--sp-line); }
+.pwt-sess-entry { background: var(--sp-surface); border: 1px solid var(--sp-line); border-radius: var(--sp-radius); overflow: hidden; }
+.pwt-sess-entry.is-open { border-color: var(--sp-line-strong); }
+.pwt-sess-row { display: grid; grid-template-columns: auto minmax(0, 1.2fr) auto; gap: 12px; align-items: center; width: 100%; padding: 9px 12px; background: transparent; border: none; text-align: left; cursor: pointer; font-family: var(--font-ui); color: var(--sp-text); transition: background 0.16s ease; }
+.pwt-sess-row:hover { background: var(--sp-surface-hover); }
+.pwt-sess-row:focus-visible { outline: 2px solid var(--sp-green); outline-offset: -2px; }
+.pwt-sess-row.is-open { background: var(--sp-surface-hover); }
+.pwt-sess-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pwt-sess-name { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-sess-meta { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.pwt-sess-stat { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pwt-sess-count { white-space: nowrap; }
+.pwt-sess-chevron { width: 16px; text-align: center; color: var(--sp-sub); font-size: 14px; line-height: 1; }
+.pwt-sess-entry.is-open .pwt-sess-chevron { color: var(--sp-green); }
+/* The expanded track list sits inside the card, below a hairline. The base
+   rules for the reused .pwt-session-tracks markup live here so the class keeps
+   exactly one definition. */
+.pwt-session-tracks { margin: 0; padding-left: 4px; list-style: none; }
 .pwt-session-tracks li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .pwt-session-track { font-size: 11px; }
+.pwt-sess-tracks { padding: 8px 12px 10px 44px; border-top: 1px solid var(--sp-line); }
+/* The two filters in the Sessions section head: compact, fixed widths. */
+.pwt-sess-filters { display: inline-flex; gap: 8px; align-items: center; }
+.pwt-sess-filter-user .pwt-select { width: 160px; max-width: 100%; }
+.pwt-sess-filter-days .pwt-select { width: 150px; max-width: 100%; }
+.pwt-sess-filter .pwt-select-trigger { height: 30px; padding: 0 10px; font-size: 11px; }
+.pwt-sess-filter .pwt-select-list { min-width: 150px; }
 .pwt-presence-list { display: flex; flex-direction: column; gap: 12px; }
-.pwt-presence-row { display: grid; grid-template-columns: 150px 1fr auto; gap: 12px; align-items: center; }
+.pwt-presence-row { display: grid; grid-template-columns: minmax(88px, 0.8fr) minmax(0, 2.4fr) auto; gap: 12px; align-items: center; }
 .pwt-presence-who { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .pwt-presence-name { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-presence-bar { position: relative; display: block; height: 10px; background: var(--sp-surface-strong); border-radius: 2px; overflow: hidden; }
 .pwt-presence-seg { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
 .pwt-presence-seg.is-online { background: var(--sp-green); }
 .pwt-presence-seg.is-hidden { background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.16) 0 4px, transparent 4px 8px); }
-.pwt-followers { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+/* Followers: folded into the hero as a compact block — the sparkline and the
+   current-value stat sit on one line, the honesty caption below. Spotify
+   answers are never faked: unavailable/degraded render a muted one-liner. */
+.pwt-profile-followers { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--sp-line); max-width: 100%; }
+.pwt-profile-followers-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+.pwt-profile-followers-row .pwt-spark { max-width: 100%; height: auto; }
+.pwt-profile-followers-detail { color: var(--sp-sub); font-size: 10.5px; max-width: 46ch; }
+.pwt-profile-followers-hint { color: var(--sp-sub); font-size: 10.5px; }
+.pwt-followers-range { width: 100%; line-height: 1.4; }
 
+/* ---------- now-playing hero (activity) ---------- */
+.pwt-now {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 14px var(--sp-page) 0;
+  padding: 14px 18px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-line);
+  border-left: 3px solid var(--sp-green);
+  border-radius: var(--sp-radius);
+}
+.pwt-now-art { flex: 0 0 auto; }
+.pwt-now .pwt-thumb-lg { width: 64px; height: 64px; border-radius: 12px; }
+.pwt-now-art-empty { display: inline-flex; width: 64px; height: 64px; border-radius: 12px; background: var(--sp-surface-strong); }
+.pwt-now-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pwt-now-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--sp-green); font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+.pwt-now-track { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; color: var(--sp-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-now-artist { font-size: 12.5px; color: var(--sp-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-now-who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.pwt-now-name { font-weight: 700; font-size: 12px; }
 /* ---------- empty / unavailable ---------- */
 .pwt-empty { text-align: center; padding: 36px 16px; color: var(--sp-sub); }
 .pwt-empty-title { font-size: 15px; font-weight: 800; color: var(--sp-text); }
@@ -617,7 +752,7 @@ select.pwt-input { appearance: auto; }
 .pwt-nav-tabs {
   display: flex;
   gap: 2px;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
@@ -650,6 +785,23 @@ select.pwt-input { appearance: auto; }
   outline: 2px solid var(--sp-green);
   outline-offset: 1px;
 }
+.pwt-nav-github {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--sp-radius-sm);
+  color: var(--sp-sub);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.pwt-nav-github:hover { background: var(--sp-surface-hover); color: var(--sp-text); }
+.pwt-nav-github:focus-visible { outline: 2px solid var(--sp-green); outline-offset: 1px; }
+.pwt-nav-github svg { display: block; }
 .pwt-nav-brand {
   flex: 0 0 auto;
   margin-left: auto;
@@ -735,15 +887,39 @@ select.pwt-input { appearance: auto; }
 .pwt-profile-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .pwt-profile-head .pwt-avatar { width: 72px; height: 72px; border-radius: 14px; font-size: 22px; }
 .pwt-profile-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 0; }
-.pwt-profile-title .pwt-tiny { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-profile-title .pwt-tiny { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-profile-title { flex: 1 1 260px; }
 .pwt-profile-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
 
-/* ---------- responsive ---------- */
-@media (max-width: 1080px) {
-  .pwt-split { grid-template-columns: 1fr; }
+/* ---------- profile hero (profiles) ---------- */
+/* Full-width band: avatar | identity | actions, mirroring the now-playing
+   hero's single bordered surface. */
+.pwt-profile-hero {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 18px;
+  align-items: start;
+  row-gap: 14px;
+  margin: 14px var(--sp-page) 0;
+  padding: 16px 18px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-line);
+  border-radius: var(--sp-radius);
 }
+.pwt-profile-hero .pwt-profile-actions { margin-left: 0; justify-content: flex-end; }
+/* The numbers live in the hero now, as a compact inline row. */
+.pwt-profile-stats { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 10px; }
+.pwt-profile-stats .pwt-stat { min-width: 0; }
+.pwt-profile-stats .pwt-stat-value { font-size: 17px; }
+
+/* ---------- fluid blocks (overview, profiles) ---------- */
+
+/* ---------- responsive ---------- */
 @media (max-width: 860px) {
-  .pwt-user-head { grid-template-columns: auto 1fr; gap: 14px; }
+  /* Stack: art and title on the first line, actions full-width below. */
+  .pwt-user-head { grid-template-columns: auto minmax(0, 1fr); gap: 14px; }
+  .pwt-profile-hero { grid-template-columns: minmax(0, 1fr); }
+  .pwt-profile-hero .pwt-profile-actions { justify-content: flex-start; }
   .pwt-user-head .pwt-profile-actions { grid-column: 1 / -1; margin-left: 0; justify-content: flex-start; }
   .pwt-hero { gap: 10px; }
   .pwt-hero-actions { flex-basis: 100%; gap: 6px; }
@@ -753,19 +929,33 @@ select.pwt-input { appearance: auto; }
   .pwt-pl-actions { margin-left: 0; flex-basis: 100%; }
 }
 @media (max-width: 640px) {
+  /* Hero and heatmap must shrink, not overflow, in a narrow Spotify pane. */
+  .pwt-now { flex-wrap: wrap; gap: 12px; padding: 12px 14px; }
+  .pwt-now .pwt-thumb-lg, .pwt-now-art-empty { width: 52px; height: 52px; }
+  .pwt-now-track { font-size: 16px; white-space: normal; }
+  .pwt-heat-cell { height: 14px; }
   .pwt-change { grid-template-columns: 36px minmax(0, 1fr); }
   .pwt-change-when { grid-column: 2; grid-row: 2; justify-self: start; text-align: left; }
   .pwt-hero { padding: 10px var(--sp-page); }
   .pwt-hero-meta { flex-basis: 100%; white-space: normal; }
   .pwt-kpis-tight .pwt-stat, .pwt-kpi-strip .pwt-stat { min-width: 96px; padding: 10px 12px; }
   .pwt-view-head-split { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .pwt-profiles-controls { width: 100%; flex-direction: column; align-items: stretch; }
+  .pwt-profiles-picker, .pwt-profiles-search { width: 100%; }
   .pwt-profile-actions { flex-basis: 100%; margin-left: 0; }
   .pwt-presence-row { grid-template-columns: 1fr; gap: 4px; }
   .pwt-pl-head { padding-top: 12px; }
   .pwt-activity-filter { width: 100%; }
+  /* Session rows: meta wraps under the identity column, filters go fluid. */
+  .pwt-sess-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 6px; }
+  .pwt-sess-meta { grid-column: 2; justify-self: start; justify-content: flex-start; gap: 8px; }
+  .pwt-sess-tracks { padding-left: 12px; }
+  .pwt-sess-filters { flex-wrap: wrap; width: 100%; }
+  .pwt-sess-filter { flex: 1 1 140px; }
+  .pwt-sess-filter .pwt-select { width: 100%; }
 }
 
-@media (prefers-reduced-motion: reduce) { .pwt-btn, .pwt-change, .pwt-user-card, .pwt-chip, .pwt-roster-row, .pwt-progress-fill { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .pwt-btn, .pwt-change, .pwt-user-card, .pwt-chip, .pwt-progress-fill, .pwt-sess-row, .pwt-nav-github { transition: none !important; } }
 
 .pwt-user-card.is-scanning { border-color: var(--sp-green-soft); }
 .pwt-scanning { display: inline-flex; align-items: center; gap: 6px; color: var(--sp-green); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }

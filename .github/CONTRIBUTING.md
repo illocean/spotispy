@@ -6,14 +6,13 @@ change and what is expected of a pull request.
 
 ## Before you start
 
-- Read [AGENTS.md](../AGENTS.md) for the architecture map and the invariants that
-  any change must respect. In particular:
+- The invariants any change must respect:
   - `sources.js` is the single place endpoints are defined.
   - `boot.js` is the one scheduler singleton (both the extension and the app call
     into it).
   - `index.js` exports the `FILES` list; `tools/build.js` derives both bundles
     from it. Add new source files there.
-  - The IndexedDB store is named `playlist-watchtower`; rename it would orphan
+  - The IndexedDB store is named `playlist-watchtower`; renaming it would orphan
     existing user data. Migrate, do not rename.
   - UI uses `h`/`createElement`, not a JSX toolchain.
   - No third-party network calls; the app is local-only.
@@ -22,7 +21,7 @@ change and what is expected of a pull request.
 
 ## Development setup
 
-Requires Node.js 20 or newer.
+Requires Node.js 22 or newer.
 
 ```powershell
 npm install      # once: jsdom + fake-indexeddb + react for the UI suite
@@ -58,7 +57,7 @@ npm run build    # writes dist/ (never touches the live install)
 
 ## Reporting bugs
 
-Open a GitHub issue with the [bug report template](ISSUE_TEMPLATE/bug_report.md).
+Open a GitHub issue with the [bug report template](ISSUE_TEMPLATE/bug_report.yml).
 Include the diagnostics dump from Settings (Diagnostics) if the problem is
 runtime-related: it is the fastest way to see what actually happened.
 

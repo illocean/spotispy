@@ -226,68 +226,65 @@
     });
 
     if (deps.probeNetwork !== false) {
-      // The Web API probes report what happened, not a guess: an unreachable
-      // endpoint is not a 429, and a lost session is not a broken client.
-      // `reached` says whether the request got an answer from Spotify at all.
-      var webApiError = function (e, reached) {
+      // The route probes report what THIS client can answer. Probing a host the
+      // client cannot reach at all (verified live on 1.3.9.2055:
+      // api.spotify.com resolves {code:429,message:"Failed to fetch"} and the
+      // renderer's own fetch() gets 401) only says "unreachable", which is
+      // indistinguishable from a real network fault. So probe the routes
+      // Spotispy actually reads through: the client playlist API and spclient.
+      await check("Playlist route (client playlist API)", async function () {
         var net = pwt.net;
-        var text = net && net.describeError ? net.describeError(e) : String((e && e.message) || e);
-        return reached ? text : "unreachable — " + text;
-      };
-
-      await check("Web API reachable (api.spotify.com/v1/me)", async function () {
-        var net = pwt.net;
+        var S = root.Spicetify;
+        var A = S && S.Platform && S.Platform.PlaylistAPI;
         if (!net || !pwt.sources) throw new Error("net/sources missing");
+        if (!A || typeof A.getContents !== "function") {
+          throw new Error("unsupported — this build has no Platform.PlaylistAPI; Spotispy uses the HTTP chain instead");
+        }
         var res;
         try {
           res = await Promise.race([
-            net.call({ method: "get", url: "https://api.spotify.com/v1/me" }),
+            net.call(pwt.sources.SOURCES.clientContents.fn("37i9dQZF1DXcBWIGoYBM5M")),
             new Promise(function (_, reject) {
               setTimeout(function () { reject(new Error("timed out after 5s")); }, 5000);
             }),
           ]);
         } catch (e) {
-          // A status means Spotify answered (a real 403/429); anything else
-          // means the request never got there. A transport-failure message is
-          // never a status, even if one was stamped on the error.
-          var eMsg = String((e && e.message) || "");
-          var eTransport = pwt.util && pwt.util.isTransportFailure && pwt.util.isTransportFailure(eMsg);
-          throw new Error(webApiError(e, !!(e && e.status) && !eTransport));
+          throw new Error("the client playlist route failed: " + String((e && e.message) || e));
         }
-        var meBe = net.bodyError ? net.bodyError(res) : null;
-        if (meBe) {
-          // A resolved error body. A transport-failure body ("Failed to fetch")
-          // is unreachable; any other body is a real answer from Spotify, shown
-          // through the shared honest wording (never a fabricated status).
-          throw new Error(webApiError(res, !meBe.transport));
-        }
-        if (res && res.id) return res.display_name ? "responded for " + res.display_name : "responded";
-        return "lost session (no token in session)";
+        var be = net.bodyError ? net.bodyError(res) : null;
+        if (be) throw new Error("the client playlist route returned an error: " + (be.message || "unknown"));
+        var parsed = pwt.sources.SOURCES.clientContents.parse(res);
+        if (!parsed.uris.length) throw new Error("the client playlist route answered, but carried no track URIs");
+        return "responded with " + parsed.uris.length + " of " + (parsed.total == null ? "?" : parsed.total) + " tracks";
       });
 
-      await check("Playlist tracks endpoint (web API)", async function () {
+      await check("Profile route (spclient user-profile-view)", async function () {
         var net = pwt.net;
         if (!net || !pwt.sources) throw new Error("net/sources missing");
         var res;
         try {
           res = await Promise.race([
-            net.call(pwt.sources.SOURCES.apiPlaylistTracks.fn("37i9dQZF1DXcBWIGoYBM5M", { offset: 0 })),
+            net.call(pwt.sources.ENDPOINTS.profile("spotify", { playlistLimit: 1, artistLimit: 0, episodeLimit: 0 })),
             new Promise(function (_, reject) {
               setTimeout(function () { reject(new Error("timed out after 6s")); }, 6000);
             }),
           ]);
         } catch (e) {
-          var plMsgE = String((e && e.message) || "");
-          var plTransportE = pwt.util && pwt.util.isTransportFailure && pwt.util.isTransportFailure(plMsgE);
-          throw new Error(webApiError(e, !!(e && e.status) && !plTransportE));
+          var eMsg = String((e && e.message) || "");
+          var eTransport = pwt.util && pwt.util.isTransportFailure && pwt.util.isTransportFailure(eMsg);
+          // A status means the client answered; anything else never got there.
+          throw new Error((e && e.status) && !eTransport ? "http " + e.status + ": " + eMsg : "unreachable — " + eMsg);
         }
-        var plBe = net.bodyError ? net.bodyError(res) : null;
-        if (plBe) {
-          // Same as the /me probe: a transport-failure body is unreachable, not
-          // a status the endpoint returned.
-          throw new Error(webApiError(res, !plBe.transport));
+        var be = net.bodyError ? net.bodyError(res) : null;
+        if (be) {
+          // Same rule as every other surface: a transport-failure body is
+          // unreachable, anything else is a real answer shown through the
+          // shared wording (never a fabricated status).
+          var text = net.describeError ? net.describeError(res) : String((be && be.message) || res);
+          throw new Error(be.transport ? "unreachable — " + text : text);
         }
-        return res && Array.isArray(res.items) ? "responded for " + (res.total || res.items.length) + " tracks" : "endpoint answered, shape changed";
+        if (res && res.uri) return "responded for " + (res.name || res.uri);
+        throw new Error("answered with an unexpected shape (no profile uri)");
       });
     }
 

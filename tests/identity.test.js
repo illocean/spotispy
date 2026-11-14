@@ -85,3 +85,13 @@ test("28-character user ids (current desktop builds) round-trip", () => {
   assert.equal(p.id, id);
   assert.equal(p.name, "Night Owl");
 });
+
+test("fmtTime renders 12-hour local time with padded minutes", () => {
+  // Local-time components keep this timezone-safe.
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 21, 5).getTime()), "9:05 PM");
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 0, 30).getTime()), "12:30 AM");
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 12, 0).getTime()), "12:00 PM");
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 9, 5).getTime()), "9:05 AM");
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 11, 59).getTime()), "11:59 AM");
+  assert.equal(U.fmtTime(new Date(2026, 10, 14, 13, 45).getTime()), "1:45 PM");
+});

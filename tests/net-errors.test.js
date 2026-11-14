@@ -292,21 +292,27 @@ test("a nested body object never leaks '[object Object]' into a message", () => 
   }
 });
 
-test("the self-test reports an unreachable Web API honestly, without a fake 429", async () => {
+test("the self-test reports a failing client playlist route, without a fake 429", async () => {
   const { P, stub } = fresh();
   try {
-    stub.CosmosAsync.get = async function () {
-      throw new TypeError("Failed to fetch");
+    // The client's playlist route is present but throws, as it does for a
+    // playlist this account cannot read. (This file's stub has no Platform, so
+    // add the one object the probe needs.)
+    stub.Platform = stub.Platform || {};
+    stub.Platform.PlaylistAPI = {
+      getContents: async function () {
+        throw new TypeError("Failed to fetch");
+      },
+      getMetadata: async function () {
+        throw new TypeError("Failed to fetch");
+      },
     };
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
-    var api = result.checks.filter(function (c) { return /Web API reachable/.test(c.name); })[0];
-    assert.ok(api, "the Web API check ran");
-    assert.equal(api.ok, false, "the endpoint genuinely did not answer");
-    assert.ok(!/429/.test(api.detail), "the detail never invents a rate limit: " + api.detail);
-    assert.ok(/unreachable/i.test(api.detail), "the detail says the endpoint was unreachable: " + api.detail);
-    // And the playlist probe agrees.
-    var pl = result.checks.filter(function (c) { return /Playlist tracks endpoint/.test(c.name); })[0];
-    assert.ok(pl && !/429/.test(pl.detail), "the playlist probe reports the same truth: " + (pl && pl.detail));
+    var pl = result.checks.filter(function (c) { return /Playlist route/.test(c.name); })[0];
+    assert.ok(pl, "the playlist-route check ran");
+    assert.equal(pl.ok, false, "the route genuinely did not answer");
+    assert.ok(!/429/.test(pl.detail), "the detail never invents a rate limit: " + pl.detail);
+    assert.ok(/failed/i.test(pl.detail), "the detail says the route failed: " + pl.detail);
   } finally {
     P.db.close();
   }
@@ -323,14 +329,13 @@ test("a resolved {code:429,message:'Failed to fetch'} body is unreachable, not a
     assert.ok(!/429/.test(text), "describeError never invents a 429 for a transport failure: " + text);
     assert.ok(/no response from the endpoint/i.test(text), "it says the endpoint did not answer: " + text);
 
+    // And the live shape through the self-test: the client route is present but
+    // answers an error body, which must be reported as an error, not a rate limit.
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
-    var api = result.checks.filter(function (c) { return /Web API reachable/.test(c.name); })[0];
-    assert.equal(api.ok, false, "the endpoint genuinely did not answer");
-    assert.ok(!/429/.test(api.detail), "the selftest never invents a rate limit: " + api.detail);
-    assert.ok(/unreachable/i.test(api.detail), "the detail says the endpoint was unreachable: " + api.detail);
-    var pl = result.checks.filter(function (c) { return /Playlist tracks endpoint/.test(c.name); })[0];
-    assert.ok(!/429/.test(pl.detail), "the playlist probe agrees: " + pl.detail);
-    assert.ok(/unreachable/i.test(pl.detail), "and says unreachable: " + pl.detail);
+    var pl = result.checks.filter(function (c) { return /Playlist route/.test(c.name); })[0];
+    assert.ok(pl, "the playlist-route check ran");
+    assert.equal(pl.ok, false, "the route genuinely did not answer");
+    assert.ok(!/429/.test(pl.detail), "the selftest never invents a rate limit: " + pl.detail);
   } finally {
     P.db.close();
   }
@@ -410,16 +415,17 @@ test("a resolved nested transport body is unreachable, never a 429 (bodyError pa
   }
 });
 
-test("the self-test reports a message-only transport body as unreachable, not a lost session", async () => {
+test("the self-test reports a message-only transport body as a failure, not a lost session", async () => {
   const { P, stub } = fresh();
   try {
-    // A body with only a transport-failure message (no code): the probes must
-    // still detect it as unreachable rather than "lost session".
+    // A body with only a transport-failure message (no code): the profile probe
+    // must report the body's own words rather than a fabricated status.
     stub.CosmosAsync.get = async function () { return { message: "Failed to fetch" }; };
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
-    var api = result.checks.filter(function (c) { return /Web API reachable/.test(c.name); })[0];
-    assert.equal(api.ok, false, "the endpoint did not answer");
-    assert.ok(/unreachable/i.test(api.detail), "reported unreachable, not 'lost session': " + api.detail);
+    var api = result.checks.filter(function (c) { return /Profile route/.test(c.name); })[0];
+    assert.ok(api, "the profile-route check ran");
+    assert.equal(api.ok, false, "the route did not answer");
+    assert.ok(/failed to fetch/i.test(api.detail), "the body's own reason is shown: " + api.detail);
     assert.ok(!/429/.test(api.detail), "no fabricated 429: " + api.detail);
   } finally {
     P.db.close();

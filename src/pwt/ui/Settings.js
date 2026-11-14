@@ -27,6 +27,70 @@
     var util = root.PWT.util;
     var diag = props.diag || { running: false, result: null, report: null };
 
+    // The two intervals are mirrored locally. onSet() re-loads the entire
+    // settings model (IndexedDB counts, cache size, artwork) asynchronously, so
+    // without this the control visibly snaps back to the old value while that
+    // load is in flight -- which reads as "the dropdown did not respond".
+    var choiceHook = root.PWT.react.hooks();
+    var choiceState = choiceHook.useState(null);
+    var chosen = choiceState[0] || {};
+    var setChosen = choiceState[1] || function () {};
+    var pollMs = chosen.pollMs != null ? chosen.pollMs : m.pollMs;
+    var activityMs = chosen.activityMs != null ? chosen.activityMs : m.activityMs;
+    function pick(key, value) {
+      setChosen(function (prev) {
+        var next = Object.assign({}, prev || {});
+        next[key] = value;
+        return next;
+      });
+      var patch = {};
+      patch[key] = value;
+      onSet(patch);
+    }
+
+    // Collapsible sections: each folds away to declutter. All start open so
+    // nothing is hidden on first view and every control (self-test, unwatch,
+    // filters) stays in the DOM; collapsing is opt-in.
+    var hook = root.PWT.react.hooks();
+    var openState = hook.useState(null);
+    var open = openState[0] || {};
+    var setOpen = openState[1] || function () {};
+    function isOpen(key) {
+      return open[key] !== false;
+    }
+    function toggle(key) {
+      setOpen(function (prev) {
+        var cur = prev || {};
+        var next = Object.assign({}, cur);
+        next[key] = cur[key] === false ? true : false;
+        return next;
+      });
+    }
+    function section(key, title, hint) {
+      var expanded = isOpen(key);
+      // Collect every child passed after the hint: a plain function would only
+      // see the first one, silently dropping the rest.
+      var children = Array.prototype.slice.call(arguments, 3);
+      return h(
+        "section",
+        { class: "pwt-section pwt-acc" + (expanded ? " is-open" : "") },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "pwt-acc-head",
+            "aria-expanded": expanded ? "true" : "false",
+            onClick: function () { toggle(key); },
+            "data-pwt-acc": key,
+          },
+          h("span", { class: "pwt-acc-title" }, title),
+          hint ? h("span", { class: "pwt-muted pwt-tiny pwt-acc-hint" }, hint) : null,
+          h("span", { class: "pwt-acc-chevron", "aria-hidden": "true" }, "⌄")
+        ),
+        h.apply(null, ["div", { class: "pwt-acc-body" }].concat(children))
+      );
+    }
+
     // While the route loads, the defaults above are NOT the user's values —
     // showing the form would invite editing the wrong numbers.
     if (props.loading && !props.model) {
@@ -66,54 +130,48 @@
         )
       ),
 
-      h(
-        kit.Section,
-        { title: "Polling", hint: "profiles and playlists only; activity has its own cadence" },
+      section(
+        "polling",
+        "Polling",
+        "profiles & playlists only; activity has its own cadence",
         h(
           "div",
           { class: "pwt-grid-2" },
           field(
             "Change scan interval",
-            h(
-              "select",
-              {
-                class: "pwt-input",
-                value: String(m.pollMs),
-                onChange: function (ev) {
-                  onSet({ pollMs: Number(ev.target.value) });
-                },
-                "data-pwt": "poll-ms",
+            h(kit.Select, {
+              "data-pwt": "poll-ms",
+              value: pollMs,
+              options: [900000, 1800000, 3600000, 10800000].map(function (ms) {
+                return { value: ms, label: view_ml(ms) + (ms === 3600000 ? " (default)" : "") };
+              }),
+              onChange: function (value) {
+                pick("pollMs", Number(value));
               },
-              [900000, 1800000, 3600000, 10800000].map(function (ms) {
-                return h("option", { value: String(ms), key: ms }, view_ml(ms) + (ms === 3600000 ? " (default)" : ""));
-              })
-            ),
+            }),
             "manual scans are never blocked by this"
           ),
           field(
             "Activity interval",
-            h(
-              "select",
-              {
-                class: "pwt-input",
-                value: String(m.activityMs),
-                onChange: function (ev) {
-                  onSet({ activityMs: Number(ev.target.value) });
-                },
-                "data-pwt": "activity-ms",
+            h(kit.Select, {
+              "data-pwt": "activity-ms",
+              value: activityMs,
+              options: [30000, 60000, 120000, 0].map(function (ms) {
+                return { value: ms, label: ms ? view_ml(ms) : "off" };
+              }),
+              onChange: function (value) {
+                pick("activityMs", Number(value));
               },
-              [30000, 60000, 120000, 0].map(function (ms) {
-                return h("option", { value: String(ms), key: ms }, ms ? view_ml(ms) : "off");
-              })
-            ),
+            }),
             "one request covers every friend each tick"
           )
         )
       ),
 
-      h(
-        kit.Section,
-        { title: "Notifications" },
+      section(
+        "notifications",
+        "Notifications",
+        m.toggles.length + " options",
         h(
           "div",
           { class: "pwt-toggles" },
@@ -148,9 +206,10 @@
         )
       ),
 
-      h(
-        kit.Section,
-        { title: "Watch list" },
+      section(
+        "watch",
+        "Watch list",
+        (props.watches || []).length + " watched",
         h(
           "div",
           { class: "pwt-add" },
@@ -223,9 +282,10 @@
         )
       ),
 
-      h(
-        kit.Section,
-        { title: "Data", hint: "local only; nothing leaves this machine except an export you start" },
+      section(
+        "data",
+        "Data",
+        "local only",
         h(
           "div",
           { class: "pwt-kpis pwt-kpis-tight" },
@@ -267,9 +327,10 @@
         h("p", { class: "pwt-muted pwt-tiny" }, "Watched data is personal data about other people. It stays in this browser profile; purge removes it for good.")
       ),
 
-      h(
-        kit.Section,
-        { title: "Diagnostics", hint: "the app watching itself" },
+      section(
+        "diagnostics",
+        "Diagnostics",
+        "the app watching itself",
         h(
           "div",
           { class: "pwt-actions" },
@@ -369,9 +430,10 @@
           : null
       ),
 
-      h(
-        kit.Section,
-        { title: "About" },
+      section(
+        "about",
+        "About",
+        (props.about && props.about.version) || "Spotispy",
         h(
           "div",
           { class: "pwt-about" },

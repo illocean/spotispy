@@ -175,6 +175,12 @@ test("a failing playlists scan still records the failure AND the name/cover from
   const fx = fixtures();
   // Every track-listing source answers the way the live client does: an error body, not data.
   calls.handlers.push({ test: function (u) { return /api\.spotify\.com\/v1\/playlists\/.*\/tracks/.test(u); }, value: { code: 429, message: "Failed to fetch" } });
+  // The client's own playlist route is what runs first; on a build where it
+  // cannot read this playlist it throws, and the HTTP chain takes over.
+  calls.handlers.push({
+    test: function (u) { return String(u).indexOf("spotify:playlist:" + fx.playlistId) >= 0; },
+    contents: function () { throw new Error("playlist not readable through the client route"); },
+  });
   calls.handlers.push({ test: function (u) { return u.indexOf("core-playlist/v1/playlist") >= 0 && /\/rows$/.test(u); }, value: { code: -1, message: "Resolver not found!" } });
   calls.handlers.push({ test: function (u) { return /api-partner/.test(u); }, value: { code: 401, message: "Failed to fetch" } });
   // The profile route works and knows the name and cover.
@@ -202,7 +208,10 @@ test("a failing playlists scan still records the failure AND the name/cover from
   assert.equal(row.coverUrl, "https://i.example/night.jpg", "and the cover");
   assert.ok(row.failures >= 1, "the failure is counted");
   assert.ok(row.lastError && !/web api 429/.test(row.lastError), "no fabricated rate limit is stored: " + row.lastError);
-  assert.ok(/unreachable|failed to fetch/i.test(row.lastError), "the real (transport) reason is stored: " + row.lastError);
+  assert.ok(
+    /unreachable|failed to fetch|client route/i.test(row.lastError),
+    "the real reason is stored, whatever source produced it: " + row.lastError
+  );
   // The scan summary must name the failure once per playlist, not twice.
   const meta = await P.store.getMeta("lastScanResult", null);
   assert.equal(meta && meta.errors && meta.errors.length, 1, "one error entry per failed playlist: " + JSON.stringify(meta && meta.errors));

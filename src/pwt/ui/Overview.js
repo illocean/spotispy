@@ -201,7 +201,7 @@
             setSelected("everyone");
           },
         },
-        h("span", { class: "pwt-chip-avatar" }, "ALL"),
+        h("span", { class: "pwt-chip-avatar", role: "img", "aria-label": "everyone", dangerouslySetInnerHTML: { __html: kit.icon("profile.followers.count") } }),
         h("span", { class: "pwt-chip-name" }, "Everyone")
       ),
       dash.users.map(function (user) {
@@ -297,7 +297,7 @@
     var header = h(
       "div",
       { class: "pwt-user-head" },
-      h(kit.Avatar, { id: detailUser.id, name: detailUser.name, src: detailUser.avatarUrl, alt: detailUser.name, large: true }),
+      h(kit.Avatar, { id: detailUser.id, name: detailUser.name, src: detailUser.avatarUrl, alt: detailUser.name, large: true, class: "pwt-hero-avatar" }),
       h(
         "div",
         { class: "pwt-user-title" },

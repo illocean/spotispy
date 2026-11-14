@@ -30,6 +30,72 @@
   }
 
   /**
+   * The client's own playlist API, or null when this build does not expose it.
+   * Read through the live global: Spicetify is installed by the host after the
+   * app's scripts load, so a captured reference would go stale.
+   */
+  function clientPlaylistApi() {
+    var S = null;
+    try {
+      S = (typeof globalThis !== "undefined" ? globalThis : window).Spicetify;
+    } catch (e) {
+      S = null;
+    }
+    var A = S && S.Platform && S.Platform.PlaylistAPI;
+    if (!A || typeof A.getContents !== "function" || typeof A.getMetadata !== "function") return null;
+    return A;
+  }
+
+  var COVER_LABELS = ["standard", "medium", "large", "extra-large"];
+
+  /**
+   * The highest-resolution cover in an album's `images` array. The client sends
+   * only `url` + `label` (no width), so `label` is the size signal; a declared
+   * `width` still wins when one is present. Returns a spotify:image: ref or URL.
+   */
+  function bestCover(images) {
+    if (!Array.isArray(images) || !images.length) return "";
+    var score = function (img) {
+      var label = COVER_LABELS.indexOf((img && img.label) || "");
+      return ((img && img.width) || 0) + (label < 0 ? 0 : label);
+    };
+    var sorted = images.slice().sort(function (a, b) {
+      return score(b) - score(a);
+    });
+    var top = sorted[0];
+    return (top && top.url) || "";
+  }
+
+  /**
+   * One item of a client playlist read, as a track row. The client already
+   * carries the full metadata, so no second lookup is needed: reading it here is
+   * what stops the playlist view rendering "Unknown track" with empty artist,
+   * album and added-by columns. Returns null for anything that is not a track.
+   */
+  function clientTrackRow(item) {
+    if (!item || !item.uri) return null;
+    if (String(item.uri).indexOf("spotify:track:") !== 0) return null;
+    var names = [];
+    var artists = Array.isArray(item.artists) ? item.artists : [];
+    for (var i = 0; i < artists.length; i++) {
+      var a = artists[i] || {};
+      var n = a.name || (a.profile && a.profile.name) || "";
+      if (n) names.push(n);
+    }
+    var album = item.album || null;
+    var duration = item.duration || null;
+    return {
+      uri: item.uri,
+      title: item.name || "",
+      artist: names.join(", "),
+      album: (album && album.name) || "",
+      albumUri: (album && album.uri) || "",
+      art: bestCover(album && album.images),
+      durationMs: (duration && duration.milliseconds) || 0,
+    };
+  }
+
+  /**
    * Endpoint definitions. When Spotify breaks a route, fix it here.
    */
   var SOURCES = {
@@ -69,6 +135,71 @@
           }
         }
         return { uris: uris, added: added, total: res && res.total != null ? res.total : null, raw: res };
+      },
+    },
+    /**
+     * The client's own playlist API (`Spicetify.Platform.PlaylistAPI`). On
+     * current desktop builds this is the only route that reads a playlist's
+     * tracks: verified live on 1.3.9.2055 that the renderer cannot reach
+     * api.spotify.com at all (CosmosAsync resolves
+     * `{code:429,error:"",message:"Failed to fetch"}` and the renderer's own
+     * fetch() gets 401), while this object answers in-process.
+     *
+     * Returned as a `client: "playlistapi"` spec; `net.call` runs it. Null when
+     * the build does not expose it, so callers fall through to the HTTP chain.
+     */
+    clientContents: {
+      fn: function (id) {
+        var A = clientPlaylistApi();
+        return A ? { client: "playlistapi", kind: "contents", api: A, id: id } : null;
+      },
+      /** @returns {{uris: string[], added: object, tracks: object, total: number|null}} */
+      parse: function (res) {
+        var items = (res && res.items) || [];
+        var uris = [];
+        var added = {};
+        var tracks = {};
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i] || {};
+          var uri = it.uri;
+          if (!uri || String(uri).indexOf("spotify:track:") !== 0) continue;
+          uris.push(uri);
+          // The same read already carried this track's title, artists, album and
+          // cover: keep them, so the playlist view never waits on a second lookup.
+          var row = clientTrackRow(it);
+          if (row && row.title) tracks[uri] = row;
+          var addedAt = it.addedAt ? Date.parse(it.addedAt) : null;
+          var addedBy = (it.addedBy && (it.addedBy.username || it.addedBy.uri)) || "";
+          if (addedAt != null || addedBy) {
+            added[uri] = { addedAt: addedAt, addedBy: String(addedBy).replace(/^spotify:user:/, "") };
+          }
+        }
+        // `totalLength` counts every item, episodes and unavailable tracks
+        // included, so a page shorter than the total is a partial read.
+        var total = res && res.totalLength != null ? res.totalLength : null;
+        return { uris: uris, added: added, tracks: tracks, total: total, raw: res };
+      },
+    },
+    clientMeta: {
+      fn: function (id) {
+        var A = clientPlaylistApi();
+        return A ? { client: "playlistapi", kind: "metadata", api: A, id: id } : null;
+      },
+      /** @returns {{name, description, owner, followers, coverUrl, coverHash, total}} */
+      parse: function (res) {
+        var r = res || {};
+        var images = r.images || [];
+        var cover = images.length ? images[images.length - 1].url || images[0].url || "" : "";
+        return {
+          name: r.name || "",
+          description: r.description || "",
+          owner: (r.owner && (r.owner.username || r.owner.uri)) || "",
+          followers: r.totalLikes != null ? r.totalLikes : null,
+          coverUrl: cover,
+          coverHash: cover ? String(cover).split("/").pop().split("?")[0] : "",
+          total: r.totalLength != null ? r.totalLength : null,
+          raw: r,
+        };
       },
     },
     coreRows: {

@@ -3,7 +3,9 @@
  * Spotispy — the single network door.
  *
  * Every request goes through `net.get/post` on top of `Spicetify.CosmosAsync`
- * so the client's session is attached automatically. On top of that door:
+ * so the client's session is attached automatically. Some routes are not HTTP at
+ * all (the client's own PlaylistAPI and GraphQL helpers) and are run in-process
+ * through the same door. On top of that door:
  *  - in-flight de-duplication (UI and scheduler share one promise);
  *  - a negative cache (deleted/private/unreachable targets back off 6 h);
  *  - 429 handling with exponential backoff, and a concurrency-capped queue;
@@ -250,6 +252,17 @@
   function call(spec) {
     if (!spec) return Promise.reject(fail("no request spec", "usage"));
     if (spec.method === "fetch") return fetchText(spec.url);
+    // The client's own playlist API is not an HTTP spec; it answers in-process
+    // and is the only route that can read a playlist on current builds.
+    if (spec.client === "playlistapi") {
+      try {
+        return Promise.resolve(
+          spec.kind === "metadata" ? spec.api.getMetadata("spotify:playlist:" + spec.id) : spec.api.getContents("spotify:playlist:" + spec.id)
+        );
+      } catch (e) {
+        return Promise.reject(asError(e));
+      }
+    }
     // The client's own GraphQL helper is not an HTTP spec; it answers directly.
     if (spec.client === "graphql") {
       var S = null;

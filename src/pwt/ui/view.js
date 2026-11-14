@@ -292,7 +292,13 @@
       var detail = c.detail || "";
       if (isIdShaped(detail)) detail = ""; // a bare track/playlist id never renders
       var addedById = c.extra && c.extra.addedBy ? String(c.extra.addedBy) : "";
-      var addedBy = addedById ? (names && names[addedById]) || "" : "";
+      // The client supplies a username ("macroplant"), which is already a name.
+      // A stored user uri is resolved through the name map when it has one, and
+      // stripped to the bare id otherwise - a raw uri is never rendered.
+      var addedBy = addedById ? (names && names[addedById]) || addedById.replace(/^spotify:user:/, "") : "";
+      // A bare id is not a name: the column says nothing rather than inventing
+      // one (the row's identity is the track, not the id of whoever added it).
+      if (addedBy && ID_SHAPED.test(addedBy)) addedBy = "";
       return Object.assign({}, c, {
         trackLabel: t ? t.title : "Unknown track",
         artist: t ? t.artist : "",

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/illocean/spotispy/actions/workflows/ci.yml/badge.svg)](https://github.com/illocean/spotispy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1ed760.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/unit%20%2B%20ui-152%20passing-1ed760.svg)](#tests-no-spotify-needed)
+[![Tests](https://img.shields.io/badge/unit%20%2B%20ui-182%20passing-1ed760.svg)](#tests-no-spotify-needed)
 [![Platform](https://img.shields.io/badge/platform-Spicetify%20%2B%20Spotify-1ed760.svg)](#install)
 [![Local only](https://img.shields.io/badge/network-local%20only-1ed760.svg)](#hard-constraints)
 
@@ -10,6 +10,22 @@ A local-only Spicetify extension + custom app that watches other users' public
 Spotify profiles and playlists, logs every observable change with the date it was seen,
 and keeps a listening-activity feed for friends who share it. All inside Spotify.
 No third-party accounts, no cost, nothing sent anywhere.
+
+## Unofficial — read this first
+
+Spotispy is an unofficial, open-source project. It is **not affiliated with,
+endorsed by, or sponsored by Spotify AB**; "Spotify" is a trademark of Spotify AB.
+
+Spotispy works through [Spicetify](https://spicetify.app) and Spotify's internal,
+undocumented client APIs (`spclient.wg.spotify.com`, `api-partner.spotify.com`,
+`guc-spclient.spotify.com`, the client's own session and persisted-query hashes).
+Those endpoints are unsupported, can change or break without notice, and using
+them may violate Spotify's Terms of Service. Spotify may rate-limit, disable, or
+otherwise restrict accounts or clients that use them.
+
+Use it at your own risk, and only to observe what your own account can already
+see. Do not use it to stalk, harass, or build profiles of people. This note is
+not legal advice.
 
 ```mermaid
 flowchart LR
@@ -157,8 +173,8 @@ layer (client session, database, endpoints) in one click.
 
 ```powershell
 npm install          # once: jsdom + fake-indexeddb + react for the UI suite
-npm test             # 122 unit tests
-npm run test:ui      # 30 UI tests
+npm test             # 150 unit tests
+npm run test:ui      # 32 UI tests
 npm run test:all     # both
 npm run build        # dist/spotispy.js + dist/CustomApps/Spotispy/
 ```
@@ -210,8 +226,8 @@ and `probe/` re-checks the three awkward ones.
 
 ## Development
 
-Requires Node.js 22+ and `npm`. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) and
-[AGENTS.md](AGENTS.md) for the architecture map and invariants. For security issues,
+Requires Node.js 22+ and `npm`. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for the development setup and the
+architecture invariants. For security issues,
 follow [SECURITY.md](.github/SECURITY.md).
 
 ## License
