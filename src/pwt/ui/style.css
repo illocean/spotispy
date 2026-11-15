@@ -418,7 +418,7 @@ button.pwt-toggle:focus-visible {
 .pwt-user-card:hover { background: var(--sp-surface-hover); border-color: var(--sp-line-strong); }
 .pwt-user-card-main {
   display: grid;
-  grid-template-columns: clamp(44px, 9vw, 64px) minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   background: none;
@@ -440,12 +440,12 @@ button.pwt-toggle:focus-visible {
 .pwt-user-card .pwt-btn { height: 30px; padding: 0 12px; align-self: center; }
 
 /* ---------- avatars / covers / thumbs ---------- */
-.pwt-avatar { width: 40px; height: 40px; object-fit: cover; border-radius: var(--sp-radius-sm); background: var(--sp-surface-strong); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; color: var(--sp-text); }
+.pwt-avatar { width: 40px; height: 40px; object-fit: cover; border-radius: var(--sp-radius-sm); background: var(--sp-surface-strong); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; color: var(--sp-text); flex: 0 0 auto; }
 .pwt-avatar-sm { width: 28px; height: 28px; font-size: 11px; }
 .pwt-avatar-lg { width: 88px; height: 88px; font-size: 28px; border-radius: 14px; }
 .pwt-avatar-fallback, .pwt-cover-fallback { background: var(--sp-surface-strong); }
 .pwt-img-fallback { display: inline-flex; align-items: center; justify-content: center; color: rgba(255, 255, 255, 0.85); }
-.pwt-cover { object-fit: cover; background: var(--sp-surface-strong); border-radius: var(--sp-radius-sm); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }
+.pwt-cover { object-fit: cover; background: var(--sp-surface-strong); border-radius: var(--sp-radius-sm); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; flex: 0 0 auto; }
 .pwt-cover-sm { border-radius: 5px; }
 .pwt-thumb { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; background: var(--sp-surface-strong); flex: 0 0 auto; }
 .pwt-thumb-sm { width: 26px; height: 26px; border-radius: 6px; }
@@ -605,14 +605,15 @@ button.pwt-toggle:focus-visible {
   border: 1px solid var(--sp-line);
   border-radius: var(--sp-radius);
   padding: 10px 14px;
-  min-width: 245px;
+  min-width: min(245px, 100%);
   max-width: 340px;
+  flex: 0 0 auto;
   scroll-snap-align: start;
 }
-.pwt-live-name { font-weight: 700; font-size: 12px; }
-.pwt-live-track { font-size: 11px; }
+.pwt-live-name { font-weight: 700; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwt-live-track { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-live-track-title { font-weight: 700; }
-.pwt-live-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pwt-live-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
 .pwt-live-main .pwt-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-live-card > .pwt-tiny { white-space: nowrap; }
 .pwt-live-state { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; color: var(--sp-green); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 800; }
@@ -681,7 +682,7 @@ button.pwt-toggle:focus-visible {
 .pwt-now-art { flex: 0 0 auto; }
 .pwt-now .pwt-thumb-lg { width: 64px; height: 64px; border-radius: 12px; }
 .pwt-now-art-empty { display: inline-flex; width: 64px; height: 64px; border-radius: 12px; background: var(--sp-surface-strong); }
-.pwt-now-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pwt-now-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
 .pwt-now-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--sp-green); font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
 .pwt-now-track { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; color: var(--sp-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-now-artist { font-size: 12.5px; color: var(--sp-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
