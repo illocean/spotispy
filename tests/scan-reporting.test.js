@@ -16,7 +16,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { boot, stubSpicetify, fixtures, stubHandlers, seed, USER_ID } = require("./support/harness.js");
+const { boot, stubSpicetify, fixtures, stubHandlers, seed, USER_ID, PLAYLIST_ID, PLAYLIST_ID_2 } = require("./support/harness.js");
 
 globalThis.PWT_ART_DISABLED = true;
 
@@ -74,4 +74,44 @@ test("a failing profile scan is counted and written to lastScanResult with the r
   await P.db.close();
   void win;
   void USER_ID;
+});
+
+test("a scoped scan with `only` touches just that playlist", async () => {
+  const { win, P } = boot();
+  const calls = { toasts: [], nav: [], get: [], post: [], handlers: [] };
+  stubSpicetify(win, calls);
+  const fx = fixtures();
+  stubHandlers(fx, calls);
+  await seed(P, fx);
+
+  // Count how many playlists the scan actually asked for.
+  let trackRequests = 0;
+  const counting = {
+    test: function (u) { return /\/playlists\/.*\/tracks/.test(u); },
+    value: function (u) {
+      trackRequests++;
+      const id = u.split("/v1/playlists/")[1].split("/tracks")[0];
+      return { items: [{ track: { uri: id === PLAYLIST_ID ? fx.tracks[0].uri : fx.tracks[1].uri }, added_at: new Date(fx.T0).toISOString() }], total: 1 };
+    },
+  };
+  calls.handlers.unshift(counting);
+
+  await P.store.putWatch({ kind: "playlist", id: PLAYLIST_ID });
+  await P.store.putWatch({ kind: "playlist", id: PLAYLIST_ID_2 });
+
+  const out = await P.playlists.scanPlaylists(
+    { db: P.db, store: P.store, net: P.net, config: P.config },
+    { force: true, only: PLAYLIST_ID }
+  );
+
+  assert.equal(out.total, 1, "only the named playlist is in scope: " + out.total);
+  assert.equal(trackRequests, 0, "the client playlist route answered, so the Web API was never consulted");
+
+  // And the other playlist's row was not rewritten by this pass.
+  const other = await P.db.get("playlists", PLAYLIST_ID_2);
+  assert.ok(!other || other.id === PLAYLIST_ID_2, "the untouched playlist is still its own row");
+
+  calls.handlers.shift();
+  await P.db.close();
+  void win;
 });

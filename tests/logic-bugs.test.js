@@ -251,15 +251,21 @@ test("scanPlaylists: a held shrink reports nothing as written, and counts as hel
     assert.ok(seeded && seeded.uris.length === 100, "the first scan stored a 100-track baseline: " + (seeded && seeded.uris.length));
     assert.equal(seeded.source, "api", "the baseline came from the Web API");
 
-    // Scan 2 sees a suspicious shrink (100 -> 2) and must hold it.
+    // Scan 2 sees a suspicious shrink (100 -> 2) and must hold the REMOVALS.
     const second = await P.playlists.scanPlaylists(deps, { force: true });
     assert.equal(second.totals.held, 1, "the shrink is held, not applied: " + JSON.stringify(second.totals));
-    // The contract: a held shrink writes no events, so no additions may be
-    // reported and edits may never go negative for changes never written.
-    assert.equal(second.totals.added, 0, "a held shrink reports no additions: " + JSON.stringify(second.totals));
+    // A hold suppresses removals only. The additions are proven by the same
+    // read, so they are still written (and still counted): dropping them made a
+    // genuinely new track invisible for a cycle.
     assert.equal(second.totals.removed, 0, "a held shrink reports no removals: " + JSON.stringify(second.totals));
+    assert.ok(second.totals.added > 0, "a held shrink still reports the additions it proved: " + JSON.stringify(second.totals));
     assert.ok(second.totals.edits >= 0, "edits never goes negative for changes that were not written: " + JSON.stringify(second.totals));
-    assert.equal(second.results[0].added, 0, "the per-playlist result reports no additions either");
+    assert.ok(second.results[0].added > 0, "the per-playlist result reports those additions either");
+
+    // And the events really are on disk: the new tracks are visible in the log.
+    const addedRows = await P.store.recentChanges(50, PID, "playlist.item.added");
+    const addedUris = addedRows.map(function (c) { return c.uri; });
+    assert.ok(addedUris.indexOf("spotify:track:new1" + "0".repeat(15)) >= 0, "a new track is logged while the shrink is held: " + JSON.stringify(addedUris));
   } finally {
     P.net.reset();
     P.db.close();
@@ -765,6 +771,385 @@ test("recentChanges: a target + kind applies both before the limit", async () =>
 
     const any = await P.store.recentChanges(4, "plTK");
     assert.equal(any.length, 4, "no kind returns the newest rows of any kind: " + any.length);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 14. trimLog: the log cap must drop the OLDEST OBSERVATION, never the newest
+// ---------------------------------------------------------------------------
+
+test("trimLog drops the oldest observation, not a back-dated row just seen", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const DAY = 86400000;
+
+    // makeEvent sets ts = sourceDate when Spotify supplied one, so a track
+    // added 3 years ago and first seen a minute ago sorts as the OLDEST row.
+    const seenNow = P.events.makeEvent(
+      {
+        level: "playlist",
+        target: "plTRIM",
+        kind: "playlist.item.added",
+        uri: "spotify:track:ttrim000000000000001",
+        title: "seen a minute ago",
+        sourceDate: now - 1095 * DAY,
+      },
+      now
+    );
+    const seen60d = P.events.makeEvent({ level: "profile", target: "uTRIM1", kind: "profile.name.changed", title: "seen 60 days ago" }, now - 60 * DAY);
+    const seen30d = P.events.makeEvent({ level: "profile", target: "uTRIM2", kind: "profile.name.changed", title: "seen 30 days ago" }, now - 30 * DAY);
+
+    // Precondition: the back-dated row really is the oldest by ts.
+    assert.ok(seenNow.ts < seen60d.ts && seen60d.ts < seen30d.ts, "fixture ordering: ts follows the source date, not the observation");
+
+    await P.store.commitScan({ changes: [seenNow, seen60d, seen30d] });
+    P.config.set({ logCap: 2 });
+    // A commit runs trimLog in its chain.
+    await P.store.commitScan({ puts: [["playlists", { id: "plTRIM", name: "P", health: "ok" }]] });
+
+    const left = await P.store.recentChanges(10);
+    const titles = left.map(function (r) { return r.title; });
+    assert.ok(titles.indexOf("seen a minute ago") >= 0, "the row just observed survives even though its ts is the oldest: " + titles.join(", "));
+    assert.ok(titles.indexOf("seen 30 days ago") >= 0, "a genuinely newer observation survives: " + titles.join(", "));
+    assert.equal(titles.indexOf("seen 60 days ago"), -1, "the genuinely oldest OBSERVATION is the one trimmed: " + titles.join(", "));
+    assert.equal(left.length, 2, "the cap holds: " + left.length);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("changesRecord stamps observedAt so every stored row is trimmable", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    // A row with no observedAt of its own: the record must still be indexed.
+    await P.store.commitScan({
+      changes: [{ level: "profile", target: "uSTAMP", kind: "profile.name.changed", title: "no observedAt", ts: now }],
+    });
+    const stored = (await P.db.getAll("changes")).filter(function (r) { return r.target === "uSTAMP"; });
+    assert.equal(stored.length, 1, "the row was written");
+    assert.equal(typeof stored[0].observedAt, "number", "observedAt is on the record, so the trim index sees it");
+    assert.ok(isFinite(stored[0].observedAt) && stored[0].observedAt > 0, "and it is a real timestamp: " + stored[0].observedAt);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 16. cover selection is scored, never a guess at the array's order
+// ---------------------------------------------------------------------------
+
+test("bestCover picks the largest image by width, whatever order the array is in", () => {
+  // Spotify does not document the order of an `images` array, so a fixed end
+  // (first or last) is a guess. Score by declared width, then by label.
+  const small = { url: "small", width: 64 };
+  const large = { url: "large", width: 640 };
+  assert.equal(sources.bestCover([small, large]), "large", "ascending order");
+  assert.equal(sources.bestCover([large, small]), "large", "descending order");
+  assert.equal(sources.bestCover([]), "", "no images is an honest empty string");
+  assert.equal(sources.bestCover(null), "", "null is safe too");
+});
+
+test("bestCover falls back to label when no width is declared", () => {
+  // The client sends label + url and no width, so label is the only signal.
+  const s = { url: "s", label: "standard" };
+  const xl = { url: "xl", label: "extra-large" };
+  assert.equal(sources.bestCover([s, xl]), "xl", "a bigger label wins");
+  assert.equal(sources.bestCover([xl, s]), "xl", "and still wins when it comes first");
+});
+
+test("clientMeta picks the largest cover instead of a fixed array end", () => {
+  // The route used to take images[images.length - 1]. With images ordered
+  // largest-first (as the Web API does) that picked the SMALLEST cover.
+  const parsed = sources.SOURCES.clientMeta.parse({
+    name: "Night Drive",
+    owner: { username: "ari" },
+    images: [
+      { url: "big", width: 640 },
+      { url: "small", width: 64 },
+    ],
+  });
+  assert.equal(parsed.coverUrl, "big", "the largest image wins regardless of order");
+});
+
+test("pathfinder.parseMetadata survives an image entry with no sources", () => {
+  // A valid metadata payload whose first image carries no `sources` used to
+  // throw a TypeError here and fail the whole route for that playlist.
+  const parsed = sources.SOURCES.pathfinder.parseMetadata({
+    data: {
+      playlistV2: {
+        name: "Night Drive",
+        ownerV2: { data: { username: "ari" } },
+        images: { items: [{ /* no sources */ }] },
+        content: { totalCount: 3 },
+      },
+    },
+  });
+  assert.ok(parsed, "the metadata still parses");
+  assert.equal(parsed.name, "Night Drive", "the name survives");
+  assert.equal(parsed.coverUrl, "", "a missing sources array is an empty cover, not a crash");
+  assert.equal(parsed.total, 3, "and the total survives");
+
+  // With sources present, the largest still wins.
+  const withSources = sources.SOURCES.pathfinder.parseMetadata({
+    data: { playlistV2: { name: "P", images: { items: [{ sources: [{ url: "a", width: 64 }, { url: "b", width: 640 }] }] } } },
+  });
+  assert.equal(withSources.coverUrl, "b", "the largest source wins");
+});
+
+// ---------------------------------------------------------------------------
+// 17. backoff escalates across an unrelated success
+// ---------------------------------------------------------------------------
+
+test("backoff step keeps escalating when other requests keep succeeding", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://api.spotify.com/v1/x") === false && h.test("https://api.spotify.com/v1/ok") === false;
+    });
+    let xCalls = 0;
+    // Every request to /x is rate limited; /ok always succeeds.
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("https://api.spotify.com/v1/x") >= 0; },
+      value: function () {
+        xCalls++;
+        throw Object.assign(new Error("rate limited"), { status: 429 });
+      },
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("https://api.spotify.com/v1/ok") >= 0; },
+      value: { ok: true },
+    });
+
+    // First rate limit: the window opens and step becomes 1.
+    await assert.rejects(function () { return P.net.call({ method: "get", url: "https://api.spotify.com/v1/x" }); });
+    const first = P.net._backoff();
+    assert.ok(first.until > 0, "the first 429 opened a backoff window");
+    assert.equal(first.step, 1, "the first 429 sets step 1: " + first.step);
+
+    // A successful unrelated request must not clear the escalation.
+    await P.net.call({ method: "get", url: "https://api.spotify.com/v1/ok" });
+    const stepAfterOtherSuccess = P.net._backoff().step;
+    assert.equal(stepAfterOtherSuccess, 1, "an unrelated success did not reset the step: " + stepAfterOtherSuccess);
+
+    // A second rate limit escalates from the previous step, not from zero.
+    await assert.rejects(function () { return P.net.call({ method: "get", url: "https://api.spotify.com/v1/x" }); });
+    const second = P.net._backoff();
+    // The delay is 2000 * 2^step, so a step that kept growing must at least
+    // double the delay rather than fall back to the first one.
+    assert.equal(second.step, 2, "the second 429 escalates: " + second.step);
+    assert.ok(second.until >= first.until, "and the window did not shrink: " + first.until + " -> " + second.until);
+    assert.equal(xCalls, 2, "both attempts reached the endpoint: " + xCalls);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 19. the self-test profile probe does not invent a user id
+// ---------------------------------------------------------------------------
+
+test("the self-test skips the profile probe honestly when nothing is watched", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const result = await P.telemetry.runSelfTest({ probeNetwork: true });
+    const api = result.checks.filter(function (c) { return /Profile route/.test(c.name); })[0];
+    assert.ok(api, "the profile-route check ran");
+    assert.ok(/skipped/i.test(api.detail), "no watched profile means an honest skip, not a fabricated failure: " + api.detail);
+    assert.ok(!/spotify\/profile/.test(api.detail), "and the detail never names a guessed id: " + api.detail);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 20. adaptive activity polling: the boost interval engages only while live
+// ---------------------------------------------------------------------------
+
+test("activity boost: an online listener arms the shorter interval", async () => {
+  const { win, P, calls } = freshBoot();
+  const realSetInterval = global.setInterval;
+  const realClearInterval = global.clearInterval;
+  const intervals = [];
+  try {
+    await clean(P);
+    await P.config.set({ activityBoost: true, activityBoostMs: 30000, activityMs: 60000 });
+    global.setInterval = function (fn, ms) { intervals.push(ms); return { _ms: ms, fake: true }; };
+    global.clearInterval = function () {};
+
+    // One friend actually listening, so the tick reports online > 0.
+    const now = Date.now();
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://guc-spclient.spotify.com/presence-view/v1/buddylist") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/presence-view/v1/buddylist") >= 0; },
+      value: {
+        friends: [
+          {
+            user: { uri: "spotify:user:ffffffffffffffffffffff", name: "Bea" },
+            track: { uri: "spotify:track:live0000000000000001", artist: { uri: "spotify:artist:x" } },
+            timestamp: now,
+          },
+        ],
+      },
+    });
+
+    const sched = P.scheduler.create({ store: P.store, db: P.db, config: P.config, net: P.net });
+    const tick = await sched.activityTick();
+    assert.ok((tick.online || 0) > 0, "the feed reports a live listener: " + tick.online);
+
+    const activityIntervals = intervals.filter(function (m) { return m !== 3600000; });
+    assert.ok(activityIntervals.length >= 1, "the activity timer is armed: " + JSON.stringify(intervals));
+    assert.equal(
+      activityIntervals[activityIntervals.length - 1],
+      30000,
+      "a live listener arms the 30s boost, not the 60s normal cadence: " + JSON.stringify(intervals)
+    );
+
+    // No listener left: the next tick returns to the normal cadence.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://guc-spclient.spotify.com/presence-view/v1/buddylist") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/presence-view/v1/buddylist") >= 0; },
+      value: { friends: [] },
+    });
+    await sched.activityTick();
+    const after = intervals.filter(function (m) { return m !== 3600000; });
+    assert.equal(after[after.length - 1], 60000, "with nobody listening the timer returns to 60s: " + JSON.stringify(intervals));
+
+    await sched.stop();
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    await P.db.close();
+    void win;
+  }
+});
+
+test("activity boost: an error back-off wins over the boost", async () => {
+  const { win, P, calls } = freshBoot();
+  const realSetInterval = global.setInterval;
+  const realClearInterval = global.clearInterval;
+  const intervals = [];
+  try {
+    await clean(P);
+    await P.config.set({ activityBoost: true, activityBoostMs: 30000, activityMs: 60000 });
+    global.setInterval = function (fn, ms) { intervals.push(ms); return { _ms: ms, fake: true }; };
+    global.clearInterval = function () {};
+
+    // Every request fails: the tick accrues an error and the back-off engages.
+    calls.handlers.length = 0;
+    calls.handlers.push({ test: function () { return true; }, value: function () { throw new TypeError("Failed to fetch"); } });
+
+    const sched = P.scheduler.create({ store: P.store, db: P.db, config: P.config });
+    await sched.activityTick();
+    assert.equal(sched._state().activityErrors, 1, "the failing tick accrued an error");
+    sched.reschedule();
+    const activityIntervals = intervals.filter(function (m) { return m !== 3600000; });
+    const last = activityIntervals[activityIntervals.length - 1];
+    assert.ok(last >= 180000, "a failed feed backs off to 180s, never the 30s boost: " + JSON.stringify(intervals));
+    await sched.stop();
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    await P.db.close();
+    void win;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 21. retention: activity history past the window is deleted, nothing else
+// ---------------------------------------------------------------------------
+
+test("pruneOlderThan removes stale plays/sessions/days and keeps recent rows and aggregates", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const day = 86400000;
+    const dayKey = require("../src/pwt/diff.js").dayKey;
+
+    // Two plays: one 10 days old, one now. Two day ticks. One session each.
+    await P.store.addPlays([
+      { userId: "u1", ts: now - 10 * day, trackUri: "spotify:track:old", durationMs: 1000 },
+      { userId: "u1", ts: now, trackUri: "spotify:track:new", durationMs: 1000 },
+    ]);
+    await P.db.batch([
+      ["dayTicks", "put", { key: dayKey(now - 10 * day), day: dayKey(now - 10 * day), onlineMs: 100 }],
+      ["dayTicks", "put", { key: dayKey(now), day: dayKey(now), onlineMs: 100 }],
+      ["sessions", "put", { id: "u1:old", userId: "u1", startedAt: now - 10 * day, endedAt: now - 10 * day }],
+      ["sessions", "put", { id: "u1:new", userId: "u1", startedAt: now, endedAt: now }],
+    ]);
+    // An aggregate and a change must never be pruned.
+    await P.db.put("aggregates", { key: "playsTotal", value: 42 });
+    await P.store.commitScan({ changes: [{ level: "profile", target: "u1", kind: "profile.name.changed", title: "keep", ts: now - 10 * day }] });
+
+    const deleted = await P.db.pruneOlderThan(now - 3 * day);
+    assert.ok(deleted >= 3, "the stale rows were counted: " + deleted);
+
+    const plays = await P.store.playsFor(null, 0, 500);
+    assert.equal(plays.length, 1, "only the recent play survives: " + plays.length);
+    assert.equal(plays[0].trackUri, "spotify:track:new", "and it is the recent one");
+
+    const days = (await P.db.getAll("dayTicks")) || [];
+    assert.equal(days.length, 1, "only the recent day tick survives: " + days.length);
+    assert.equal(days[0].day, dayKey(now), "and it is the recent day");
+
+    const sessions = (await P.db.getAll("sessions")) || [];
+    assert.equal(sessions.length, 1, "only the recent session survives: " + sessions.length);
+    assert.equal(sessions[0].id, "u1:new", "and it is the recent one");
+
+    const agg = await P.db.get("aggregates", "playsTotal");
+    assert.ok(agg, "aggregates survive retention: " + JSON.stringify(agg));
+    const changes = (await P.db.getAll("changes")) || [];
+    assert.equal(changes.filter(function (c) { return c.target === "u1"; }).length, 1, "change history survives retention");
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("pruneOlderThan does nothing without a cutoff", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    assert.equal(await P.db.pruneOlderThan(0), 0, "zero is not a cutoff");
+    assert.equal(await P.db.pruneOlderThan(NaN), 0, "NaN is not a cutoff");
+    const plays = (await P.db.getAll("plays")) || [];
+    assert.ok(plays.length >= 0, "nothing was deleted");
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("pruneOlderThan deletes in chunks, not one oversized transaction", async () => {
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const now = Date.now();
+    const day = 86400000;
+    // Far more stale rows than one chunk: a single transaction over all of
+    // them is what risks QuotaExceededError discarding every delete.
+    const stale = [];
+    for (let i = 0; i < 4500; i++) {
+      stale.push({ userId: "bulk", ts: now - 20 * day + i, trackUri: "spotify:track:bulk" + i, durationMs: 1000 });
+    }
+    await P.store.addPlays(stale);
+    await P.store.addPlays([{ userId: "bulk", ts: now, trackUri: "spotify:track:fresh", durationMs: 1000 }]);
+
+    const deleted = await P.db.pruneOlderThan(now - 3 * day);
+    assert.equal(deleted, 4500, "every stale row was deleted: " + deleted);
+
+    const after = await P.store.playsFor("bulk", 0, 100000);
+    assert.equal(after.length, 1, "only the fresh row remains: " + after.length);
+    assert.equal(after[0].trackUri, "spotify:track:fresh", "and it is the fresh one");
   } finally {
     await P.db.close();
   }

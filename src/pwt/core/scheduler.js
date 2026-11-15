@@ -7,8 +7,10 @@
  *   every 60s -> activityTick()          one request, adaptive cadence
  *
  * Single-flight: a second runNow while one is in flight returns the same
- * promise. `force:true` only skips the "polled < 5 min ago" guard. Live progress
- * is published on the shared `bus` object, which the app reads.
+ * promise. `force:true` skips the "polled < 5 min ago" guard, which applies
+ * only to `scope:'all'` (a single-phase manual scan is always allowed). Pass
+ * `only:<id>` with `scope:'playlists'` to restrict the pass to one playlist.
+ * Live progress is published on the shared `bus` object, which the app reads.
  */
 (function (root, factory) {
   var api = factory(root);
@@ -31,6 +33,9 @@
     var running = null;
     var activityRunning = null;
     var activityErrors = 0;
+    // Whether the activity timer is currently armed at the boost interval.
+    // Only a change of this state re-arms the timer (see activityTick).
+    var activityBoosted = false;
     var stopped = true;
     var startedAt = Date.now();
     var config = deps.config || (P() && P().config);
@@ -73,7 +78,9 @@
     var phaseTotals = {};
 
     function recomputeTotals() {
-      var out = { added: 0, removed: 0, edits: 0, failed: 0, errors: [] };
+      // `held`/`reseeded` are per-playlist counters that only the playlists
+      // phase produces; carry them or the bus and lastScanResult lose them.
+      var out = { added: 0, removed: 0, edits: 0, failed: 0, held: 0, reseeded: 0, errors: [] };
       ["profiles", "playlists"].forEach(function (key) {
         var t = phaseTotals[key];
         if (!t) return;
@@ -81,6 +88,8 @@
         out.removed += t.removed || 0;
         out.edits += t.edits || 0;
         out.failed += t.failed || 0;
+        out.held += t.held || 0;
+        out.reseeded += t.reseeded || 0;
         if (Array.isArray(t.errors)) out.errors = out.errors.concat(t.errors);
       });
       return out;
@@ -105,7 +114,8 @@
 
     /**
      * Run a scan.
-     * @param {object} opts { scope: 'all'|'profiles'|'playlists', force }
+     * @param {object} opts { scope: 'all'|'profiles'|'playlists', force,
+     *   only?: playlistId — narrows scope:'playlists' to one watched playlist }
      */
     function runNow(opts) {
       opts = opts || {};
@@ -139,6 +149,7 @@
           if (scope === "all" || scope === "playlists") {
             out.playlists = await pwt.playlists.scanPlaylists(deps, {
               force: opts.force,
+              only: opts.only,
               progress: progress,
             });
             if (out.playlists && out.playlists.totals) phaseTotals.playlists = out.playlists.totals;
@@ -185,6 +196,28 @@
           } catch (e) {
             /* art is a cache fill, not part of the scan contract */
           }
+          // Retention: drop activity history past the user's window, at most
+          // once a day. Deleting user data is never silent, so this is logged
+          // in telemetry and skipped entirely when the setting is off.
+          try {
+            var retainDays = settings().retainDays;
+            if (retainDays > 0) {
+              var dayMs = 86400000;
+              var lastPrune = await deps.store.getMeta("lastPruneAt", 0);
+              if (!lastPrune || Date.now() - lastPrune > dayMs) {
+                var deleted = await P().db.pruneOlderThan(Date.now() - retainDays * dayMs);
+                // Advance the clock even when the delete was partial: the next
+                // run picks up the rest, instead of retrying the whole window
+                // on every scan and never reporting progress.
+                await deps.store.setMeta("lastPruneAt", Date.now());
+                if (P().telemetry && deleted) P().telemetry.record("retention.prune", 0, true, deleted + " rows older than " + retainDays + "d");
+              }
+            }
+          } catch (ePrune) {
+            /* retention is hygiene; a failure must not break the scan */
+          }
+          // Clear the single-flight guard and publish before leaving, so a
+          // long retention pass cannot delay the UI's next progress frame.
           running = null;
           emit();
         }
@@ -216,6 +249,15 @@
           bus.lastActivityAt = Date.now();
           bus.activityState = r.state;
           bus.activity = { plays: r.plays || 0, sessions: r.sessions || 0, online: r.online || 0, hidden: r.hidden || 0 };
+          // Adaptive cadence: while anyone is actually listening, poll the feed
+          // at the boost interval instead of the normal one, so a track change
+          // is seen in seconds rather than a minute. Re-arm only on a CHANGE of
+          // that state — reschedule() every tick would churn the timer.
+          var boosting = !!(settings().activityBoost && (r.online || 0) > 0);
+          if (boosting !== activityBoosted) {
+            activityBoosted = boosting;
+            reschedule();
+          }
           if (r.records) {
             bus.activityRecords = r.records;
           } else if (r.unchanged) {
@@ -251,6 +293,12 @@
         if (Date.now() - (bus.lastScanAt || 0) >= s.pollMs - 5000) runNow({ scope: "all" });
       }, Math.min(s.pollMs, 60000));
       var activityMs = activityErrors ? Math.max(s.activityMs, ACTIVITY_ERROR_BACKOFF_MS) : s.activityMs;
+      // Adaptive cadence: while someone is listening, use the shorter boost
+      // interval so a track change is seen in seconds. The error back-off still
+      // wins over both — a dead feed is never polled faster.
+      if (activityBoosted && !activityErrors && s.activityBoost && s.activityBoostMs > 0) {
+        activityMs = Math.min(activityMs, s.activityBoostMs);
+      }
       // Re-arm from the current error state, so a failure that arrived after
       // start() still backs the timer off instead of leaving it at the normal
       // cadence. reschedule() is the only place that reads activityErrors, and
@@ -292,6 +340,9 @@
       clearInterval(timers.activity);
       timers.scan = null;
       timers.activity = null;
+      // Start from the normal cadence next time: a stale boost flag would
+      // re-arm a stopped scheduler at the short interval.
+      activityBoosted = false;
       // Session repair: close every open session at its last observed play.
       try {
         var pwt = P();

@@ -204,7 +204,7 @@
               danger: true,
               ghost: true,
               onClick: function () {
-                if (props.onUnwatch) props.onUnwatch(row.id);
+                if (props.onUnwatch) props.onUnwatch("profile", row.id);
               },
             })
           )

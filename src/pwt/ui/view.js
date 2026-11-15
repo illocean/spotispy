@@ -524,6 +524,9 @@
       pollLabel: minutesLabel(settings.pollMs),
       activityMs: settings.activityMs,
       activityLabel: minutesLabel(settings.activityMs),
+      // The boost interval and retention window are user choices the Settings
+      // view renders as controls; without them the view cannot show its own state.
+      activityBoostMs: settings.activityBoostMs,
       toggles: [
         { key: "notifyToast", label: "In-app toast after a scan", value: !!settings.notifyToast },
         { key: "notifyOs", label: "OS notification when Spotify is minimised", value: !!settings.notifyOs },

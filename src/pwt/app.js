@@ -55,12 +55,24 @@
         if (!failed) return;
         line = failed + " source" + (failed === 1 ? "" : "s") + " failed — open Overview for the reason";
       }
-      dedupeToast("done:" + line, 45000, function () {
-        if (!settings.notifyToast || !P.notify || !P.notify.emit) return false;
-        // emit() returns whether the send landed (OS channel or a real toast),
-        // so a degraded client — one that only console.info's — never stamps
-        // the key.
-        return P.notify.emit("Spotispy scan", line) === true;
+      // The channel is chosen BEFORE the dedupe key, so a notification the user
+      // switched off never stamps the key and never swallows a later real one.
+      if (!settings.notifyToast) return;
+      var send = P.notify && P.notify.emit ? function () { return P.notify.emit("Spotispy scan", line); } : null;
+      if (!send) return;
+      dedupeToast("done:" + line, 45000, send);
+    };
+  }
+
+  if (!root.__pwtPresenceToast) {
+    // One presence digest per burst: the same friend going online/offline twice
+    // in a minute is one announcement, not two toasts.
+    root.__pwtPresenceToast = function (line) {
+      var dedupeKey = "presence:" + String(line || "");
+      dedupeToast(dedupeKey, 30000, function () {
+        if (!P.popup || !P.popup.toast) return false;
+        P.popup.toast(line);
+        return true;
       });
     };
   }
@@ -95,13 +107,23 @@
         root.__pwtScanErrorToast && root.__pwtScanErrorToast(e);
       },
       onActivity: function (r) {
-        if (r && r.transitions && P.config.get().notifyPresence) {
-          var names = r.transitions.map(function (t) {
-            var n = t.name && !/^[A-Za-z0-9]{22,}$/.test(String(t.name).trim()) ? t.name : "Unknown listener";
-            return n + (t.kind === "activity.online" ? " is online" : " went out of view");
-          });
-          if (names.length) P.popup.toast(names.slice(0, 2).join(" · "));
+        // Presence toasts are an in-app channel like any other: the toast
+        // toggle gates them too, and they go through the same dedupe so a
+        // change cannot be announced twice.
+        if (!r || !r.transitions || !P.config.get().notifyPresence) return;
+        var s = P.config.get();
+        if (!s.notifyToast) return;
+        var names = r.transitions.map(function (t) {
+          var n = t.name && !/^[A-Za-z0-9]{22,}$/.test(String(t.name).trim()) ? t.name : "Unknown listener";
+          return n + (t.kind === "activity.online" ? " is online" : " went out of view");
+        });
+        if (!names.length) return;
+        var line = names.slice(0, 2).join(" · ");
+        if (root.__pwtPresenceToast) {
+          root.__pwtPresenceToast(line);
+          return;
         }
+        if (P.popup && P.popup.toast) P.popup.toast(line);
       },
     };
   }

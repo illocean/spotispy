@@ -95,7 +95,7 @@
             danger: true,
             ghost: true,
             onClick: function () {
-              if (props.onUnwatch) props.onUnwatch(m.id);
+              if (props.onUnwatch) props.onUnwatch("playlist", m.id);
             },
           })
         )
@@ -122,21 +122,21 @@
           actions: h(
             "span",
             { class: "pwt-filter" },
-            h(
-              "select",
-              {
-                class: "pwt-input pwt-input-sm",
-                value: filter.kind,
-                onChange: function (ev) {
-                  if (props.onFilter) props.onFilter({ kind: ev.target.value, query: filter.query });
-                },
-                "data-pwt": "filter-kind",
+            // kit.Select, not a native <select>: CEF often refuses to open the
+            // native popup, which made this filter unusable in the client.
+            h(kit.Select, {
+              options: [
+                { value: "", label: "all changes" },
+                { value: "added", label: "added" },
+                { value: "removed", label: "removed" },
+                { value: "edits", label: "edits" },
+              ],
+              value: filter.kind,
+              onChange: function (v) {
+                if (props.onFilter) props.onFilter({ kind: v, query: filter.query });
               },
-              h("option", { value: "" }, "all changes"),
-              h("option", { value: "added" }, "added"),
-              h("option", { value: "removed" }, "removed"),
-              h("option", { value: "edits" }, "edits")
-            ),
+              "data-pwt": "filter-kind",
+            }),
             h("input", {
               class: "pwt-input pwt-input-sm",
               type: "search",

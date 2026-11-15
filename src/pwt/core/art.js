@@ -66,6 +66,9 @@
       }
       var cover = entity.coverArt;
       if (Array.isArray(cover) && cover.length) {
+        // A bare coverArt array carries no width or label, so the embed page's
+        // own order (largest last) is the only signal there is. This is a
+        // fallback: the scored `visualIdentity.image` path above runs first.
         for (var c = cover.length - 1; c >= 0; c--) {
           var last = cover[c];
           if (last && last.url) return last.url;
@@ -74,6 +77,7 @@
         return null;
       }
       if (cover && Array.isArray(cover.sources) && cover.sources.length) {
+        // Same: an unsized sources array, so the last entry is the largest.
         var lastSrc = cover.sources[cover.sources.length - 1];
         return (lastSrc && lastSrc.url) || null;
       }
@@ -262,7 +266,7 @@
       }
       for (var j = 0; j < playlists.length; j++) {
         var pl = playlists[j];
-        if (pl && pl.id && !pl.coverUrl) gaps.push({ kind: "playlist", uri: "spotify:playlist:" + pl.id, at: pl.lastSyncedAt || pl.fetchedAt || 0 });
+        if (pl && pl.id && !pl.coverUrl) gaps.push({ kind: "playlist", id: pl.id, uri: "spotify:playlist:" + pl.id, at: pl.lastSyncedAt || pl.fetchedAt || 0 });
       }
       var profiles = [];
       try {
@@ -272,7 +276,7 @@
       }
       for (var k = 0; k < profiles.length; k++) {
         var p = profiles[k];
-        if (p && p.id && !p.avatarUrl) gaps.push({ kind: "profile", uri: "spotify:user:" + p.id, at: p.lastSyncedAt || p.fetchedAt || 0 });
+        if (p && p.id && !p.avatarUrl) gaps.push({ kind: "profile", id: p.id, uri: "spotify:user:" + p.id, at: p.lastSyncedAt || p.fetchedAt || 0 });
       }
       var metaRows = [];
       try {
@@ -326,7 +330,24 @@
               }
               return true;
             }
-            return true; /* playlists/profiles: artFor persisted to meta itself */
+            // Playlists and profiles: artFor caches the URL under `meta:art:`,
+            // but the GAP is a missing field on the entity row. Write it back
+            // or the same row is re-fetched on every sweep forever, starving
+            // the newer gaps behind it in the `at`-sorted, `limit`-sliced list.
+            var storeName = gap.kind === "playlist" ? "playlists" : "profiles";
+            var field = gap.kind === "playlist" ? "coverUrl" : "avatarUrl";
+            try {
+              var freshRow = await db.get(storeName, gap.id);
+              // Only fill a row that is still missing it: a scan may have
+              // resolved the cover in the meantime, and that answer wins.
+              if (!freshRow || freshRow[field]) return false;
+              var patch = {};
+              patch[field] = url;
+              await db.put(storeName, Object.assign({}, freshRow, patch));
+              return true;
+            } catch (e9) {
+              return false; /* the row is gone or the write failed */
+            }
           } catch (e8) {
             return false;
           }

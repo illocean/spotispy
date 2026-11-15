@@ -15,6 +15,7 @@
       pollLabel: "60 min",
       activityMs: 60000,
       activityLabel: "60 s",
+      activityBoostMs: 10000,
       toggles: [],
       retainDays: 90,
       logCap: 10000,
@@ -37,6 +38,10 @@
     var setChosen = choiceState[1] || function () {};
     var pollMs = chosen.pollMs != null ? chosen.pollMs : m.pollMs;
     var activityMs = chosen.activityMs != null ? chosen.activityMs : m.activityMs;
+    // Same mirror for the boost interval and retention: without it the control
+    // snaps back while onSet() re-loads the model asynchronously.
+    var activityBoostMs = chosen.activityBoostMs != null ? chosen.activityBoostMs : m.activityBoostMs;
+    var retainDays = chosen.retainDays != null ? chosen.retainDays : m.retainDays;
     function pick(key, value) {
       setChosen(function (prev) {
         var next = Object.assign({}, prev || {});
@@ -164,6 +169,34 @@
               },
             }),
             "one request covers every friend each tick"
+          ),
+          field(
+            "Boost interval (friends playing)",
+            h(kit.Select, {
+              "data-pwt": "activity-boost-ms",
+              value: activityBoostMs,
+              options: [5000, 10000, 30000].map(function (ms) {
+                return { value: ms, label: view_ml(ms) };
+              }),
+              onChange: function (value) {
+                pick("activityBoostMs", Number(value));
+              },
+            }),
+            "only used while the boost toggle is on and a friend is listening"
+          ),
+          field(
+            "Activity retention",
+            h(kit.Select, {
+              "data-pwt": "retain-days",
+              value: retainDays,
+              options: [0, 30, 90, 180, 365].map(function (d) {
+                return { value: d, label: d ? d + " days" : "keep forever" };
+              }),
+              onChange: function (value) {
+                pick("retainDays", Number(value));
+              },
+            }),
+            "deletes older play history after a scan, at most once a day"
           )
         )
       ),
@@ -292,7 +325,7 @@
           h(kit.Stat, { value: m.cacheLabel, label: "cache size" }),
           h(kit.Stat, { value: (m.counts && m.counts.changes) || 0, label: "change rows" }),
           h(kit.Stat, { value: (m.counts && m.counts.plays) || 0, label: "play rows" }),
-          h(kit.Stat, { value: m.retainDays, label: "activity retention (days)" })
+          h(kit.Stat, { value: m.retainDays, label: "activity retention (days, enforced on scan)" })
         ),
         h(
           "div",
@@ -445,8 +478,10 @@
   }
 
   function view_ml(ms) {
-    var m = Math.round(ms / 60000);
-    return m + " min";
+    // Sub-minute cadences are legal (the boost default is 10 s), so rounding to
+    // "0 min" would misreport them.
+    if (ms < 60000) return Math.round(ms / 1000) + " s";
+    return Math.round(ms / 60000) + " min";
   }
 
   return Settings;

@@ -44,6 +44,16 @@
     }
   }
 
+  /** Live settings, read through the shared config so a toggle takes effect now. */
+  function settings() {
+    var pwt = root.PWT;
+    try {
+      return (pwt && pwt.config && pwt.config.get()) || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
   function osNotify(title, body) {
     var s = osState();
     if (!s.supported || s.state !== "granted") return false;
@@ -55,24 +65,37 @@
     }
   }
 
-  /** Single channel used by the pollers: toast when focused, OS otherwise. */
+  /**
+   * Single channel used by the pollers: toast when focused, OS otherwise.
+   * The OS channel is opt-in: with `notifyOs` off and Spotify unfocused there is
+   * no channel left, so this returns false and the caller's dedupe key is not
+   * stamped (a later real notification still gets through).
+   */
   function emit(title, body) {
+    var s = settings();
     var sent = false;
-    if (!focused()) sent = osNotify(title, body);
-    if (!sent) return toast(body ? title + " — " + body : title);
+    if (!focused() && s.notifyOs !== false) sent = osNotify(title, body);
+    if (!sent) {
+      // Focused, or OS notifications declined: the in-app toast is the channel.
+      if (s.notifyToast === false && !focused()) return false;
+      return toast(body ? title + " — " + body : title);
+    }
     return true;
   }
 
-  /** Format one digest line for a scan. */
+  /**
+   * Format one digest line for a scan. Each class of change has its own toggle,
+   * so a user who only cares about additions does not get the rest.
+   */
   function digest(counts) {
+    var s = settings();
     var added = counts.added || 0;
     var removed = counts.removed || 0;
     var edits = counts.edits || 0;
-    if (!added && !removed && !edits) return "";
     var parts = [];
-    if (added) parts.push("+" + added + " track" + (added === 1 ? "" : "s"));
-    if (removed) parts.push("−" + removed + " track" + (removed === 1 ? "" : "s"));
-    if (edits) parts.push(edits + " change" + (edits === 1 ? "" : "s"));
+    if (added && s.notifyAdditions !== false) parts.push("+" + added + " track" + (added === 1 ? "" : "s"));
+    if (removed && s.notifyRemovals !== false) parts.push("−" + removed + " track" + (removed === 1 ? "" : "s"));
+    if (edits && s.notifyProfile !== false) parts.push(edits + " change" + (edits === 1 ? "" : "s"));
     return parts.join(", ");
   }
 

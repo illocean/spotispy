@@ -315,6 +315,26 @@ test("settings renders the diagnostics panel", async () => {
   assert.ok(html.indexOf("Run self-test") >= 0, "self-test button");
 });
 
+test("settings renders a control for every cadence and retention option", async () => {
+  const { P, win } = state;
+  const html = await render(P, win, P.ui.Settings, {
+    model: P.view.settingsModel(P.config.get(), { os: P.notify.osState(), cacheBytes: 1, counts: {} }),
+    watches: [],
+    addState: {},
+    diag: {},
+    onSet: function () {},
+  });
+  // Every setting the scheduler enforces must be reachable from the UI,
+  // otherwise the value can only be changed by editing LocalStorage by hand.
+  assert.ok(html.indexOf('data-pwt="poll-ms"') >= 0, "the scan interval control");
+  assert.ok(html.indexOf('data-pwt="activity-ms"') >= 0, "the activity interval control");
+  assert.ok(html.indexOf('data-pwt="activity-boost-ms"') >= 0, "the boost interval control");
+  assert.ok(html.indexOf('data-pwt="retain-days"') >= 0, "the retention control");
+  // The boost options must all be sub-minute: a "faster" cadence that is not
+  // faster would never engage.
+  assert.ok(html.indexOf("10 s") >= 0, "the boost interval renders in seconds, not '0 min'");
+});
+
 test("the self-test runs every check and reports no failure", async () => {
   const { P } = state;
   const result = await P.telemetry.runSelfTest({ db: P.db, store: P.store, bus: P.bus, probeNetwork: true });
@@ -448,6 +468,54 @@ test("unwatching from Settings removes exactly that watch", async () => {
   unmountControllers();
   // put it back so later tests see the same fixture
   await P.store.putWatch({ kind: "playlist", id: PLAYLIST_ID });
+});
+
+test("unwatching from the Profiles view removes the PROFILE watch, not a playlist of the same id", async () => {
+  const { P, win } = state;
+  // The controller used to guess the kind from the current route, so an id-only
+  // call could delete the wrong kind's row (and then the route reloaded as if
+  // it had worked). The view knows its kind and must say so.
+  const calls = [];
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  const row = { id: USER_ID, name: "Ari", avatarUrl: ART.avatarFriend, playlists: [], changes: [], followerHistory: [], watchedAt: state.fx.T0 };
+  try {
+    P.react.mount(el, P.ui.Profiles, {
+      model: { rows: [row], selected: USER_ID },
+      loading: false,
+      onUnwatch: function (kind, id) {
+        calls.push({ kind: kind, id: id });
+      },
+    });
+    await waitFor(function () { return el.querySelector("button"); }, "the profiles detail");
+    const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent.indexOf("Unwatch") >= 0);
+    assert.ok(button, "the unwatch button is rendered");
+    button.click();
+    assert.equal(calls.length, 1, "the handler ran");
+    assert.equal(calls[0].kind, "profile", "the view names the kind it is unwatching: " + calls[0].kind);
+    assert.equal(calls[0].id, USER_ID, "and the right id");
+  } finally {
+    try { el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
+});
+
+test("a rejected watch shows the reason instead of failing silently", async () => {
+  const { P, win } = state;
+  const el = await mountController("settings");
+  await waitFor(function () { return el.querySelector('[data-pwt="add-playlist"]'); }, "the add inputs");
+  const input = el.querySelector('[data-pwt="add-playlist"]');
+  const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
+  setter.call(input, "not-a-playlist");
+  input.dispatchEvent(new win.Event("input", { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 60); });
+  const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent.indexOf("Watch playlist") >= 0);
+  assert.ok(button, "the watch button is rendered");
+  button.click();
+  // The controller sets add.error; the view must render it.
+  const shown = await waitFor(function () { return el.querySelector(".pwt-error"); }, "the rejection message");
+  assert.ok(/does not look like a playlist/i.test(shown.textContent), "the user is told why: " + shown.textContent);
+  unmountControllers();
 });
 
 test("the activity search filters the live list in place", async () => {

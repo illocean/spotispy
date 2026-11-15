@@ -418,6 +418,9 @@ test("a resolved nested transport body is unreachable, never a 429 (bodyError pa
 test("the self-test reports a message-only transport body as a failure, not a lost session", async () => {
   const { P, stub } = fresh();
   try {
+    // The profile probe now probes a WATCHED profile rather than a hardcoded
+    // legacy username, so the fixture must have one.
+    await P.store.putWatch({ kind: "profile", id: "probeUser1234567890abcd" });
     // A body with only a transport-failure message (no code): the profile probe
     // must report the body's own words rather than a fabricated status.
     stub.CosmosAsync.get = async function () { return { message: "Failed to fetch" }; };

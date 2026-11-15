@@ -189,7 +189,10 @@
       parse: function (res) {
         var r = res || {};
         var images = r.images || [];
-        var cover = images.length ? images[images.length - 1].url || images[0].url || "" : "";
+        // bestCover scores by declared width/label; taking a fixed end of the
+        // array guesses at an order Spotify does not document, and the routes
+        // disagreed (some took the last entry, some the first).
+        var cover = bestCover(images);
         return {
           name: r.name || "",
           description: r.description || "",
@@ -262,7 +265,7 @@
           description: r.description || "",
           owner: (r.owner && (r.owner.id || r.owner.uri)) || "",
           followers: r.followers && r.followers.total != null ? r.followers.total : null,
-          coverUrl: (r.images && r.images[0] && r.images[0].url) || "",
+          coverUrl: bestCover(r.images),
           coverHash:
             ((r.images && r.images[0] && String(r.images[0].url).split("/").pop().split("?")[0]) || "") + "|" + (r.snapshot_id || ""),
           raw: r,
@@ -302,7 +305,7 @@
         return {
           name: entity.name || entity.title || "",
           owner: (entity.subtitle || "").replace(/^By\s+/i, ""),
-          coverUrl: entity.coverArt && entity.coverArt.sources ? ((entity.coverArt.sources.slice(-1)[0] || {}).url || "") : "",
+          coverUrl: bestCover(entity.coverArt && entity.coverArt.sources),
           uris: uris,
           added: added,
           total: list.length,
@@ -354,10 +357,14 @@
       parseMetadata: function (res) {
         var p = res && res.data && res.data.playlistV2;
         if (!p) return null;
+        // An image entry carries `sources`; a payload whose first image has none
+        // used to throw here and fail the whole route for a valid response.
+        var img = p.images && p.images.items && p.images.items[0];
+        var sources = (img && img.sources) || [];
         return {
           name: p.name || "",
           owner: (p.ownerV2 && (p.ownerV2.data && (p.ownerV2.data.username || p.ownerV2.data.uri))) || "",
-          coverUrl: p.images && p.images.items && p.images.items[0] ? p.images.items[0].sources.slice(-1)[0].url : "",
+          coverUrl: bestCover(sources),
           description: p.description || "",
           total: p.content && p.content.totalCount != null ? p.content.totalCount : null,
         };
@@ -528,5 +535,8 @@
     ENDPOINTS: ENDPOINTS,
     normalizeActivity: normalizeActivity,
     normalizeBuddylist: normalizeBuddylist,
+    // Shared so every route picks a cover the same way instead of guessing at
+    // the array's order (see the profile view, which also uses it).
+    bestCover: bestCover,
   };
 });

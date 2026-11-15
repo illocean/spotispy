@@ -511,9 +511,12 @@
           }
           var rows = [];
           for (var i = 0; i < profiles.length; i++) {
-            var changes = await store.changesFor("profile:" + profiles[i].id, 400);
-            var byName = changes
-              .concat(await store.changesFor(profiles[i].id, 400))
+            // Every profile-level row is written with the bare user id as its
+            // target (see profiles.js diffProfile); there is no "profile:"
+            // target, so the prefixed read below is always empty. It used to be
+            // issued anyway — a full 50k-row cursor scan per watched profile,
+            // half of it dead weight.
+            var byName = (await store.changesFor(profiles[i].id, 400))
               .map(function (c) {
                 return Object.assign({}, c, {
                   display: profiles[i].name || "",
@@ -596,11 +599,16 @@
           for (var s = 0; s < allStates.length; s++) states[allStates[s].userId] = allStates[s];
           var sessions = await store.sessionsFor(null, 100);
           var plays = await store.playsFor(null, 0, 5000);
+          // One read of the whole track cache instead of one transaction per
+          // play (up to 5000 serial gets on every Activity load).
           var tracksCache = {};
-          for (var pp = 0; pp < plays.length; pp++) {
-            if (!plays[pp].trackUri) continue;
-            var trow = await db.get("tracks", plays[pp].trackUri);
-            if (trow) tracksCache[plays[pp].trackUri] = trow;
+          try {
+            var allTracks = (await db.getAll("tracks")) || [];
+            for (var ti = 0; ti < allTracks.length; ti++) {
+              if (allTracks[ti] && allTracks[ti].uri) tracksCache[allTracks[ti].uri] = allTracks[ti];
+            }
+          } catch (eTracks) {
+            tracksCache = {};
           }
           var records = (pwt.bus && pwt.bus.activityRecords) || [];
           var liveTracks = {};
@@ -921,6 +929,8 @@
     }
 
     async function followerHistory(userId) {
+      // Bare user id, like every other profile-level row (see the profiles
+      // route above): the "profile:" prefix names no stored target.
       var changes = await P.store.changesFor(userId, 400);
       return changes
         .filter(function (c) {
@@ -1080,7 +1090,10 @@
     var uiProps = Object.assign({}, model, props, {
       route: route,
       filter: route === "playlist" ? playlistFilter : route === "activity" ? activityFilter : filter,
-      addState: Object.assign({}, model.addState || {}, { playlist: add.playlist, profile: add.profile }),
+      addState: Object.assign({}, model.addState || {}, { playlist: add.playlist, profile: add.profile, error: add.error }),
+      // The Settings view reads `addError`; it is the same value `addState.error`
+      // carries, exposed under the name the view already uses.
+      addError: add.error || (model.addState && model.addState.error) || "",
       watches: model.watches || [],
       onNavigate: guard("navigate", function (next) {
         navigate(next);
@@ -1111,7 +1124,9 @@
         }
         return P.boot
           .instance()
-          .scheduler.runNow({ scope: "playlists", force: true })
+          // Just this playlist: a full playlist pass would spend requests on —
+          // and could mark failing — playlists the user did not ask about.
+          .scheduler.runNow({ scope: "playlists", force: true, only: id })
           .then(function () {
             return load("playlist", { playlistId: id });
           });
@@ -1193,9 +1208,14 @@
         load(routeRef.current, { selected: selectedRef.current });
       },
       onExport: guard("export", function (format) {
+        // The log exports what is on screen (filters applied), so the filename
+        // says so: a filtered 1-row export must not look like a full log dump.
         var rows = model.rows || (model.vm && model.vm.recent) || [];
-        if (format === "csv") P.export.download(P.export.filename("spotispy-log", "csv"), "text/csv", P.export.toCsv(rows));
-        else P.export.download(P.export.filename("spotispy-log", "json"), "application/json", P.export.toJson(rows));
+        var f = filterRef.current || {};
+        var suffix = [f.kind, f.level, f.query ? "q" : ""].filter(Boolean).join("-");
+        var base = "spotispy-log" + (suffix ? "-" + suffix : "");
+        if (format === "csv") P.export.download(P.export.filename(base, "csv"), "text/csv", P.export.toCsv(rows));
+        else P.export.download(P.export.filename(base, "json"), "application/json", P.export.toJson(rows));
       }),
       onSet: guard("settings", async function (patch) {
         if (props.onSettingsChange) props.onSettingsChange(patch);

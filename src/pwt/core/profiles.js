@@ -124,10 +124,12 @@
           return pwtU.util && pwtU.util.imageUrl ? pwtU.util.imageUrl(raw) : raw;
         };
         // `image_url` first: profile-view playlists carry spotify:mosaic: refs.
+        // The plain `images` array is scored the same way every other route
+        // scores it, rather than taking a fixed end.
         covers =
           toU(item.image_url) ||
           toU(item.imageUrl) ||
-          toU(item.images && item.images[0] && (item.images[0].url || (item.images[0].sources && item.images[0].sources.slice(-1)[0] && item.images[0].sources.slice(-1)[0].url))) ||
+          toU(pwtU.sources && pwtU.sources.bestCover ? pwtU.sources.bestCover(item.images) : "") ||
           toU(item.cover) ||
           "";
       } catch (e) {

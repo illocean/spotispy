@@ -238,3 +238,111 @@ test("sweep is a no-op when PWT_ART_DISABLED is set", async () => {
     globalThis.PWT_ART_DISABLED = false;
   }
 });
+
+test("sweep clears a missing playlist cover on the playlist row itself", async () => {
+  // The gap is a missing `coverUrl` on the playlist row, and artFor caches the
+  // URL under `meta:art:`. Without a write-back to the row, the same playlist is
+  // re-fetched on every sweep forever, starving the newer gaps behind it.
+  globalThis.PWT_ART_DISABLED = false;
+  var playlistRow = { id: "37i9dQZF1DXcBWIGoYBM5M", name: "Night Drive", coverUrl: "" };
+  var writes = [];
+  var artCalls = 0;
+  globalThis.PWT = {
+    // playlistCover() resolves a playlist's cover from the watched profiles'
+    // own play lists — no network — so seed one.
+    util: { imageUrl: function (r) { return r; } },
+    net: {
+      pool: function (items, _size, worker) {
+        // The real pool returns { results: [...] }, where each entry is
+        // { ok, value } — sweep counts the `value` entries.
+        return Promise.all(
+          items.map(function (item) {
+            return worker(item).then(function (v) { return { ok: true, value: v }; });
+          })
+        ).then(function (results) {
+          return { results: results };
+        });
+      },
+    },
+    store: {},
+    db: {},
+  };
+
+  var deps = {
+    db: {
+      getAll: function (name) {
+        if (name === "playlists") return Promise.resolve([playlistRow]);
+        if (name === "profiles") {
+          return Promise.resolve([
+            { id: "u1", avatarUrl: "https://i.scdn.co/image/avatar", plays: [{ uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", cover: "https://i.scdn.co/image/found" }] },
+          ]);
+        }
+        return Promise.resolve([]);
+      },
+      get: function (store, id) {
+        if (store === "playlists" && id === "37i9dQZF1DXcBWIGoYBM5M") return Promise.resolve(playlistRow);
+        return Promise.resolve(null);
+      },
+      put: function (store, row) {
+        writes.push({ store: store, row: row });
+        if (store === "playlists") playlistRow = row;
+        return Promise.resolve();
+      },
+    },
+    store: { getMeta: function () { return Promise.resolve(null); }, setMeta: function () { return Promise.resolve(); } },
+  };
+  try {
+    var out = await Art.sweep(deps, { limit: 10 });
+    assert.equal(out.checked, 1, "the playlist gap was checked: " + JSON.stringify(out));
+    assert.equal(out.filled, 1, "and filled: " + JSON.stringify(out));
+    assert.equal(playlistRow.coverUrl, "https://i.scdn.co/image/found", "the cover is written back to the playlist row");
+    assert.equal(writes.length, 1, "exactly one write");
+    assert.equal(writes[0].store, "playlists", "to the playlist store");
+
+    // A second sweep must not re-fetch it: the gap is gone.
+    var before = artCalls;
+    var out2 = await Art.sweep(deps, { limit: 10 });
+    assert.equal(out2.checked, 0, "nothing left to fetch: " + JSON.stringify(out2));
+    assert.equal(artCalls, before, "and no network call was made");
+  } finally {
+    globalThis.PWT_ART_DISABLED = false;
+  }
+});
+
+test("sweep leaves a cover that a scan already resolved", async () => {
+  // A concurrent scan may have filled the row while the fetch was in flight.
+  // The sweep must not overwrite it.
+  globalThis.PWT_ART_DISABLED = false;
+  var playlistRow = { id: "PL2", name: "Day Drive", coverUrl: "" };
+  globalThis.PWT = {
+    art: { artFor: function () { return Promise.resolve("https://i.scdn.co/image/sweep"); } },
+    net: {
+      pool: function (items, _s, worker) {
+        return Promise.all(items.map(function (item) { return worker(item).then(function (v) { return { ok: true, value: v }; }); }))
+          .then(function (results) { return { results: results }; });
+      },
+    },
+    store: {}, db: {},
+  };
+  var deps = {
+    db: {
+      getAll: function (n) {
+        if (n === "playlists") return Promise.resolve([playlistRow]);
+        return Promise.resolve([]);
+      },
+      get: function (store, id) {
+        // The row gained a cover while the fetch was running.
+        if (store === "playlists" && id === "PL2") return Promise.resolve({ id: "PL2", name: "Day Drive", coverUrl: "https://i.scdn.co/image/scan" });
+        return Promise.resolve(null);
+      },
+      put: function () { return Promise.reject(new Error("must not write over a resolved cover")); },
+    },
+    store: { getMeta: function () { return Promise.resolve(null); }, setMeta: function () { return Promise.resolve(); } },
+  };
+  try {
+    var out = await Art.sweep(deps, { limit: 10 });
+    assert.equal(out.filled, 0, "the sweep did not overwrite the scanned cover: " + JSON.stringify(out));
+  } finally {
+    globalThis.PWT_ART_DISABLED = false;
+  }
+});

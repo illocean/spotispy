@@ -54,12 +54,16 @@
   }
 
   /**
-   * Stored shape of one change row. The indexed fields (ts, kind, target,
-   * bucket) sit at the top level, next to the row itself, because IndexedDB
-   * indexes cannot reach into the `row` object.
+   * Stored shape of one change row. The indexed fields (ts, observedAt, kind,
+   * target, bucket) sit at the top level, next to the row itself, because
+   * IndexedDB indexes cannot reach into the `row` object.
+   *
+   * `observedAt` is written unconditionally (falling back to `ts`): the log is
+   * trimmed by it, and a row missing from that index could never be trimmed.
    */
   function changesRecord(key, row) {
-    return Object.assign({}, row, { key: key, bucket: "log" });
+    var seen = row && row.observedAt != null && isFinite(row.observedAt) ? row.observedAt : row && row.ts;
+    return Object.assign({}, row, { key: key, bucket: "log", observedAt: seen });
   }
 
   function logCap() {
@@ -206,7 +210,16 @@
     return __wrap(chained);
   }
 
-  /** Keep the log under the cap; day aggregates are never trimmed. */
+  /**
+   * Keep the log under the cap; day aggregates are never trimmed.
+   *
+   * Trim order is `observedAt` — when the row was SEEN — never `ts`, which is
+   * the date Spotify attached to the fact. A track added in 2022 and first seen
+   * today has ts=2022, so trimming by ts deletes the newest observation while
+   * genuinely older rows survive (and the aggregate still counts the row that
+   * is gone). Day aggregates are written under the same key as the row, so they
+   * are never trimmed: the bucket keeps the total.
+   */
   function trimLog() {
     var cap = logCap();
     return db()
@@ -214,7 +227,7 @@
       .then(function (n) {
         if (n <= cap) return null;
         var excess = n - cap;
-        return db().range("changes", "ts", undefined, { direction: "next", limit: excess }).then(function (rows) {
+        return db().range("changes", "observedAt", undefined, { direction: "next", limit: excess }).then(function (rows) {
           if (!rows.length) return null;
           return db().batch(rows.map(function (r) {
             return ["changes", "del", r.key];

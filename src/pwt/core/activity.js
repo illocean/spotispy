@@ -128,12 +128,15 @@
     }
 
     // Fill missing friend avatars from Spotify (cached). Never breaks a tick.
+    // Same watch gate as the main loop: a person the user turned off gets no
+    // network traffic just because they appear in the feed.
     try {
       for (var ai = 0; ai < feed.records.length; ai++) {
         var recA = feed.records[ai];
         if (!recA || recA.avatar) continue;
         var fid = String(recA.userUri || "").replace(/^spotify:user:/, "");
         if (!fid) continue;
+        if (!(await watchedFor(deps, fid))) continue;
         try {
           var cached = null;
           try {
@@ -277,6 +280,10 @@
       var uri = records[i].trackUri;
       if (seen[uri]) continue;
       seen[uri] = true;
+      // Same watch gate as the avatar pass: an unwatched person's tracks are
+      // not looked up just because they appear in the feed.
+      var who = String(records[i].userUri || "").replace(/^spotify:user:/, "");
+      if (who && !(await watchedFor(deps, who))) continue;
       var row = await db.get("tracks", uri);
       if (row && row.durationMs) out[uri] = row.durationMs;
       else {

@@ -261,10 +261,24 @@
       await check("Profile route (spclient user-profile-view)", async function () {
         var net = pwt.net;
         if (!net || !pwt.sources) throw new Error("net/sources missing");
+        // Probe a profile this account actually watches. "spotify" is a legacy
+        // username, not a base62 user id: the route answers it with a not-found
+        // body, so the self-test used to report a failed route on a healthy
+        // install. With no watched profile there is nothing honest to probe, so
+        // say so instead of guessing an id.
+        var watched = [];
+        try {
+          watched = (await store.listWatches("profile")) || [];
+        } catch (eW) {
+          watched = [];
+        }
+        if (!watched.length) {
+          throw new Error("skipped — no watched profile to probe (add one in Settings)");
+        }
         var res;
         try {
           res = await Promise.race([
-            net.call(pwt.sources.ENDPOINTS.profile("spotify", { playlistLimit: 1, artistLimit: 0, episodeLimit: 0 })),
+            net.call(pwt.sources.ENDPOINTS.profile(watched[0].id, { playlistLimit: 1, artistLimit: 0, episodeLimit: 0 })),
             new Promise(function (_, reject) {
               setTimeout(function () { reject(new Error("timed out after 6s")); }, 6000);
             }),

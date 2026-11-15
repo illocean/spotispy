@@ -179,6 +179,12 @@
     var key = spec.method + " " + url;
     if (inflight[key]) return inflight[key];
     var wait = backoff.until - Date.now();
+    // A request that starts while a backoff window is still open is part of
+    // that window. Only a request that starts after it has elapsed proves the
+    // endpoint has recovered, and only that one may decay the step — otherwise
+    // any unrelated success resets the escalation and the delay never grows
+    // past one doubling.
+    var startsInBackoff = wait > 0;
     var p = (wait > 0 ? sleep(wait) : Promise.resolve())
       .then(function () {
         if (spec.mock) return spec.mock(spec);
@@ -201,7 +207,7 @@
       })
       .then(
         function (v) {
-          backoff.step = 0;
+          if (!startsInBackoff) backoff.step = 0;
           return v;
         },
         function (e) {

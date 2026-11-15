@@ -370,7 +370,11 @@
       snapshotRow.uris = (snapshot && snapshot.uris) || fresh.uris.slice();
     }
 
-    if (plan.action === "diff") {
+    // Additions are emitted for a diff OR a hold. A hold means "the shrink is
+    // unconfirmed, so emit no removals yet" — it is not a reason to drop adds,
+    // which the same read already proved. Dropping them meant a genuine new
+    // track was invisible for a cycle.
+    if (plan.action === "diff" || plan.action === "hold") {
       for (var a = 0; a < plan.added.length; a++) {
         var uri = plan.added[a];
         var add = fresh.added && fresh.added[uri] ? fresh.added[uri] : null;
@@ -453,13 +457,13 @@
       events: events,
       snapshot: snapshotRow,
       playlist: playlistRow,
-      // Counts describe what was actually WRITTEN. A held shrink writes no
-      // events, so reporting plan.added (additions it never logged) would make
-      // the scan summary claim additions that do not exist and drive edits
-      // negative. additions/removals are the logged events; edits is the rest.
+      // Counts describe what was actually WRITTEN. A hold writes the additions
+      // it proved and no removals, so both counts must follow the events array
+      // rather than the plan: reporting plan.added for a reseed (which writes
+      // nothing) would claim changes that do not exist and drive edits negative.
       counts: {
-        added: plan.action === "diff" ? events.filter(function (e) { return e.kind === "playlist.item.added"; }).length : 0,
-        removed: plan.action === "diff" ? events.filter(function (e) { return e.kind === "playlist.item.removed"; }).length : 0,
+        added: events.filter(function (e) { return e.kind === "playlist.item.added"; }).length,
+        removed: events.filter(function (e) { return e.kind === "playlist.item.removed"; }).length,
       },
       held: plan.action === "hold",
       reseeded: plan.action === "reseed",
@@ -467,8 +471,11 @@
   }
 
   /**
-   * Scan every watched playlist.
+   * Scan watched playlists.
    * @param {object} deps { db, store, net, config, progress }
+   * @param {object} [opts] { only: playlistId } — restrict the pass to one
+   *   watched playlist. A manual "Scan now" on a playlist page must not spend a
+   *   request on (or change the health of) playlists the user did not ask about.
    */
   async function scanPlaylists(deps, opts) {
     var pwt = P();
@@ -477,6 +484,9 @@
     var store = deps.store || pwt.store;
     opts = opts || {};
     var watches = await store.listWatches("playlist");
+    // An unknown id scans nothing at all rather than silently scanning all:
+    // a silent full pass is exactly the surprise this option exists to stop.
+    if (opts.only) watches = watches.filter(function (w) { return w.id === opts.only; });
     var total = watches.length;
     var done = 0;
     var totals = { added: 0, removed: 0, edits: 0, failed: 0, held: 0, reseeded: 0 };
@@ -575,10 +585,21 @@
           },
         ]);
       }
-      await store.commitScan({
-        puts: [["playlists", evaluated.playlist], ["snapshots", evaluated.snapshot]].concat(trackPuts),
-        changes: evaluated.events,
-      });
+      try {
+        await store.commitScan({
+          puts: [["playlists", evaluated.playlist], ["snapshots", evaluated.snapshot]].concat(trackPuts),
+          changes: evaluated.events,
+        });
+      } catch (eCommit) {
+        // A persistence failure is the playlist's failure, not an anonymous
+        // one: the row's name and health are still the previous scan's, so
+        // record the reason against the id and let the pool callback count it
+        // once (it must not push a second, nameless copy).
+        var commitWhy = String((eCommit && eCommit.message) || eCommit).slice(0, 300);
+        if (!totals.errors) totals.errors = [];
+        totals.errors.push({ id: w.id, name: row.name || "", error: "save failed: " + commitWhy });
+        return { error: "save failed: " + commitWhy };
+      }
       // Remember what this playlist holds, so its tracks get real titles and
       // album art (the scan reads these to fill the metadata cache).
       try {

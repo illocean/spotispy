@@ -14,7 +14,10 @@
 
   // Historical name, kept on purpose so existing local data survives the rename.
   var DB_NAME = "playlist-watchtower";
-  var DB_VERSION = 1;
+  // v2 added the `observedAt` index (see SCHEMA.changes): the log is trimmed by
+  // when a change was OBSERVED, not by the date Spotify attached to it, so a
+  // back-dated add is never the first row deleted.
+  var DB_VERSION = 2;
 
   // store -> { keyPath, indexes: [[name, keyPath, unique]] }
   // Only stores something actually reads or writes are declared, and only
@@ -30,6 +33,10 @@
       keyPath: "key",
       indexes: [
         ["ts", "ts", false],
+        // Trim order: when the row was seen, never when Spotify says the fact
+        // happened. A track added in 2022 and first seen today must not be the
+        // first row the log cap deletes.
+        ["observedAt", "observedAt", false],
         ["target", "target", false],
       ],
     },
@@ -78,7 +85,7 @@
             if (!store.indexNames.contains(ix[0])) store.createIndex(ix[0], ix[1], { unique: !!ix[2] });
           }
         }
-        if (from > 0 && from < DB_VERSION) migrate(database, from, DB_VERSION);
+        if (from > 0 && from < DB_VERSION) migrate(database, req.transaction, from, DB_VERSION);
       };
       req.onsuccess = function () {
         db = req.result;
@@ -101,15 +108,36 @@
   }
 
   /**
-   * Schema migrations. Version 1 is the initial schema, so this only runs for
-   * future versions; it is the extension point for §6.4 ("no data loss").
+   * Schema migrations. `from`/`to` are the old and new DB versions; the upgrade
+   * transaction is passed so a backfill can write in the same transaction that
+   * created the index (a cursor over a store the transaction owns).
    */
-  function migrate(database, from, to) {
+  function migrate(database, tx, from, to) {
     if (from < 1) return; // fresh install: nothing to migrate
-    // v1 -> v2 (example): backfill a field on existing rows.
-    // var tx = database.transaction;
-    // ...
-    void to;
+    // v1 -> v2: the `observedAt` index was added, but rows written before it
+    // existed would be missing from that index and so could never be trimmed.
+    // Every row written by this app carries observedAt (makeEvent stamps it),
+    // so this normally copies nothing; it is here so a row that predates the
+    // field is given one instead of silently becoming un-trimmable.
+    if (from < 2 && database.objectStoreNames.contains("changes")) {
+      try {
+        var changes = tx.objectStore("changes");
+        if (changes.indexNames.contains("observedAt")) {
+          changes.openCursor().onsuccess = function (ev) {
+            var cur = ev.target.result;
+            if (!cur) return;
+            var row = cur.value;
+            if (row && (row.observedAt == null || !isFinite(row.observedAt))) {
+              row.observedAt = isFinite(row.ts) ? row.ts : Date.now();
+              cur.update(row);
+            }
+            cur.continue();
+          };
+        }
+      } catch (e) {
+        /* a backfill that cannot run leaves the old rows as they were */
+      }
+    }
   }
 
   function tx(stores, mode, fn) {
@@ -226,7 +254,11 @@
             resolve(out);
             return;
           }
-          out.push(cursor.value);
+          // Callers that delete by key (retention pruning) need the row's
+          // PRIMARY key, which a keyPath store does not put on the value — and
+          // on an index cursor that is `cursor.primaryKey`, not `cursor.key`
+          // (which is the index's own key).
+          out.push(opts.withKeys ? { key: cursor.primaryKey, value: cursor.value } : cursor.value);
           cursor.continue();
         };
       });
@@ -264,6 +296,93 @@
       ["dayTicks", "clear"],
       ["activityState", "clear"],
     ]);
+  }
+
+  /**
+   * Delete activity history older than `cutoffMs` (the user's retention setting).
+   * Plays are indexed by `ts` and day ticks are keyed `YYYY-MM-DD`, so both can
+   * be read in order and deleted from the front; sessions carry `startedAt`.
+   * Aggregates, changes and watches are deliberately untouched: this is history
+   * hygiene, not a purge. Returns the number of rows deleted.
+   *
+   * Deletes run in bounded chunks. A first run can easily hold tens of
+   * thousands of rows; putting them all in ONE IndexedDB transaction risks a
+   * QuotaExceededError that discards every delete, so nothing is freed and the
+   * same oversized delete is retried forever. Chunking means partial progress
+   * is real progress.
+   */
+  async function pruneOlderThan(cutoffMs) {
+    if (!cutoffMs || !isFinite(cutoffMs)) return 0;
+    var KeyRange = (typeof globalThis !== "undefined" && globalThis.IDBKeyRange) || (typeof IDBKeyRange !== "undefined" ? IDBKeyRange : null);
+    if (!KeyRange) return 0;
+    await open();
+
+    var CHUNK = 2000;
+    var dayKeyOf = function (ts) {
+      var d = new Date(ts == null ? Date.now() : ts);
+      var m = d.getMonth() + 1;
+      var day = d.getDate();
+      return d.getFullYear() + "-" + (m < 10 ? "0" + m : m) + "-" + (day < 10 ? "0" + day : day);
+    };
+    var dayCutoff = dayKeyOf(cutoffMs);
+    var count = 0;
+
+    // Delete one store's key list in chunks.
+    var deleteInChunks = async function (store, keys) {
+      // No stale rows is the common case (a fresh install, or a window that
+      // covers everything): skip the transaction entirely rather than opening
+      // an empty one.
+      if (!keys.length) return;
+      for (var i = 0; i < keys.length; i += CHUNK) {
+        var slice = keys.slice(i, i + CHUNK).map(function (k) {
+          return [store, "del", k];
+        });
+        await batch(slice);
+        count += slice.length;
+      }
+    };
+
+    // plays: index `ts` is ascending, so everything before the cutoff is a prefix.
+    try {
+      var stalePlays = await range("plays", "ts", KeyRange.upperBound(cutoffMs, true), { withKeys: true });
+      await deleteInChunks(
+        "plays",
+        stalePlays.map(function (r) {
+          return r.key;
+        })
+      );
+    } catch (e) {
+      /* a store with no index still leaves the rest to run */
+    }
+
+    // sessions: no index, so filter on startedAt.
+    try {
+      var allSessions = (await getAll("sessions")) || [];
+      var staleSessions = [];
+      for (var s = 0; s < allSessions.length; s++) {
+        var row = allSessions[s];
+        var when = row && typeof row.startedAt === "number" ? row.startedAt : 0;
+        if (when && when < cutoffMs) staleSessions.push(row.id);
+      }
+      await deleteInChunks("sessions", staleSessions);
+    } catch (e2) {
+      /* ignore */
+    }
+
+    // dayTicks: keys are YYYY-MM-DD, so a lexical bound is the date bound.
+    try {
+      var staleDays = await range("dayTicks", null, KeyRange.upperBound(dayCutoff, true), { withKeys: true });
+      await deleteInChunks(
+        "dayTicks",
+        staleDays.map(function (r) {
+          return r.key;
+        })
+      );
+    } catch (e3) {
+      /* ignore */
+    }
+
+    return count;
   }
 
   function purgeAll() {
@@ -304,6 +423,7 @@
     count: count,
     range: range,
     batch: batch,
+    pruneOlderThan: pruneOlderThan,
     purgeActivity: purgeActivity,
     purgeAll: purgeAll,
   };

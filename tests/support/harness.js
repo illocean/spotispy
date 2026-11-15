@@ -41,6 +41,13 @@ function boot() {
   globalThis.indexedDB = idb.indexedDB;
   globalThis.IDBKeyRange = idb.IDBKeyRange;
   globalThis.PWT = { appDir: ROOT };
+  // The scheduler singleton lives on the global, so a second boot() in the same
+  // process would otherwise inherit the previous test's scheduler and deps and
+  // report isBooted() === true before this test armed anything. node --test
+  // isolates files into separate processes, but two boot() calls in ONE file
+  // (net-errors, logic-bugs) share the global.
+  delete globalThis.__PWT_BOOT__;
+  delete globalThis.__pwtToastSeen;
   // Kill switch: the art sweep must never hit the real network in tests/harness.
   globalThis.PWT_ART_DISABLED = true;
   // And neither may anything else: in node, global fetch is real network. A
