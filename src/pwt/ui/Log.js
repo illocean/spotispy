@@ -154,17 +154,22 @@
                   h(
                     "td",
                     null,
-                    h(
-                      "button",
-                      {
-                        type: "button",
-                        class: "pwt-link-btn",
-                        onClick: function () {
-                          if (props.onOpenRow) props.onOpenRow(r);
-                        },
-                      },
-                      "open"
-                    )
+                    // Only a playlist row has somewhere to go. Rendering "open" on
+                    // a profile row produced a button that did nothing at all —
+                    // a silent failure, which this app does not allow.
+                    r.level === "playlist"
+                      ? h(
+                          "button",
+                          {
+                            type: "button",
+                            class: "pwt-link-btn",
+                            onClick: function () {
+                              if (props.onOpenRow) props.onOpenRow(r);
+                            },
+                          },
+                          "open"
+                        )
+                      : null
                   )
                 );
               })

@@ -1154,3 +1154,494 @@ test("pruneOlderThan deletes in chunks, not one oversized transaction", async ()
     await P.db.close();
   }
 });
+
+test("rowKey buckets by the local day, matching the aggregate bucket", () => {
+  // rowKey is the log's dedupe identity and it used to bucket by UTC
+  // (toISOString) while every aggregate and every label in the UI uses the
+  // LOCAL day (diff.dayKey). For part of the day in any timezone away from UTC
+  // the two disagree: a fact first seen at 00:30 local on the 17th keys as the
+  // 16th, so the same edit seen again later that local day becomes a SECOND
+  // row, and its aggregate lands in the 16th's bucket.
+  let ts = null;
+  for (let h = 0; h < 24 && ts === null; h++) {
+    const d = new Date(2026, 10, 17, h, 30, 0); // 17 Nov, h:30 local
+    if (d.getDate() === 17 && new Date(d.getTime()).toISOString().slice(0, 10) !== "2026-11-17") ts = d.getTime();
+  }
+  if (ts === null) {
+    // This machine's offset keeps the two aligned all day, so there is nothing
+    // to distinguish here; assert the invariant at midday instead.
+    ts = new Date(2026, 10, 17, 12, 0, 0).getTime();
+  }
+
+  const row = {
+    level: "playlist",
+    target: "pl1",
+    kind: "playlist.item.added",
+    uri: "spotify:track:x",
+    ts: ts,
+    detail: "a",
+  };
+  const keyDay = events.rowKey(row).split("\u0001")[4];
+  assert.equal(keyDay, diff.dayKey(ts), "rowKey day matches diff.dayKey: " + keyDay + " vs " + diff.dayKey(ts));
+});
+
+test("an activity tick reads only the dayTicks aggregates it touches", async () => {
+  // The absence/dayTicks pass used to `getAll("dayTicks")` — every friend-day
+  // ever retained — to update the handful of days this tick actually writes. At
+  // 10 watched friends over 90 days that is hundreds of rows loaded on every
+  // tick (60s normally, 10s while a friend is playing) and it grows without
+  // bound. Pin the narrower read.
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+
+    // A watched friend who is playing, so tickRows is non-empty.
+    const USER = fx.userId;
+    const prof = await P.db.get("profiles", USER);
+    await P.db.put("profiles", Object.assign({}, prof || { id: USER }, { watchActivity: true }));
+
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+      value: function () {
+        return {
+          entities: [
+            {
+              userEntity: {
+                uri: "spotify:user:" + USER,
+                name: "Ari",
+                activity: {
+                  entityUri: fx.tracks[0].uri,
+                  timestamp: new Date().toISOString(),
+                  isPlaying: true,
+                  contextUri: "",
+                },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    const day = diff.dayKey(Date.now());
+    const unrelated = [];
+    for (let i = 0; i < 40; i++) {
+      unrelated.push(["dayTicks", "put", { key: "other" + i + ":" + day, day: day, userId: "other" + i, ticks: [] }]);
+      unrelated.push(["dayTicks", "put", { key: day + ":someoneelse" + i, day: day, userId: "someoneelse" + i, ticks: [] }]);
+    }
+    await P.db.batch(unrelated);
+
+    // Count reads against the dayTicks store during one tick.
+    let allReads = 0;
+    let keyedReads = 0;
+    const realGetAll = P.db.getAll;
+    const realGet = P.db.get;
+    P.db.getAll = function (s) {
+      if (s === "dayTicks") allReads++;
+      return realGetAll.apply(P.db, arguments);
+    };
+    P.db.get = function (s, k) {
+      if (s === "dayTicks") keyedReads++;
+      return realGet.apply(P.db, arguments);
+    };
+
+    let tick;
+    try {
+      tick = await P.activity.tick({ net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} }, { force: true });
+    } finally {
+      P.db.getAll = realGetAll;
+      P.db.get = realGet;
+    }
+
+    assert.equal(tick.state, "ok", "the tick ran: " + JSON.stringify(tick));
+    assert.equal(allReads, 0, "the whole dayTicks store was not loaded: " + allReads + " getAll calls");
+    assert.ok(keyedReads >= 1, "at least one keyed read happened: " + keyedReads);
+
+    // The unrelated rows survived — the fix did not delete or overwrite them.
+    const still = (await P.db.getAll("dayTicks")) || [];
+    assert.ok(still.length >= 80, "the unrelated aggregates are untouched: " + still.length);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("a track added during an unconfirmed shrink is counted once", async () => {
+  // A shrink is held for one cycle: the hold reports the additions but
+  // withholds the removals, and the next scan confirms them. The hold used to
+  // keep the PRE-shrink uri list (so the guard can re-detect the shrink), which
+  // meant the confirmation scan diffed against it and emitted the same addition
+  // again — on a later day, so rowKey could not dedupe and the day bucket
+  // counted the track twice.
+  const { win, P } = freshBoot();
+  try {
+    await clean(P);
+    const id = "pl-shrink";
+    await P.store.putWatch({ kind: "playlist", id: id });
+
+    const uri = function (c) { return "spotify:track:" + c.repeat(22); };
+    const day = 86400000;
+    const run = async function (uris, delta) {
+      const fresh = {
+        uris: uris,
+        added: {},
+        tracks: {},
+        total: uris.length,
+        source: "client",
+        capped: false,
+        meta: { name: "Night Drive" },
+      };
+      uris.forEach(function (u) { fresh.added[u] = { addedAt: null, addedBy: "" }; });
+      const row = (await P.db.get("playlists", id)) || { id: id, failures: 0, health: "new" };
+      const snap = await P.db.get("snapshots", id);
+      const ev = P.playlists.evaluate(row, snap, fresh, fresh.meta, Date.now() + delta, {});
+      await P.store.commitScan({ changes: ev.events, puts: [["snapshots", ev.snapshot], ["playlists", ev.playlist]] });
+      return ev.events;
+    };
+
+    // 6 tracks, then 2 (a >50% drop, so the shrink is held) with track 7 added.
+    await run([1, 2, 3, 4, 5, 6].map(function (i) { return uri(String(i)); }), 0);
+    const after = [uri("1"), uri("7")];
+    const holdEvents = await run(after, day);
+    const confirmEvents = await run(after, 2 * day);
+
+    const holdAdds = holdEvents.filter(function (e) { return e.kind === "playlist.item.added"; });
+    assert.equal(holdAdds.length, 1, "the hold reports the new track once: " + holdAdds.length);
+    assert.equal(holdEvents.filter(function (e) { return e.kind === "playlist.item.removed"; }).length, 0, "and withholds every removal");
+
+    const confirmAdds = confirmEvents.filter(function (e) { return e.kind === "playlist.item.added" && e.uri === uri("7"); });
+    assert.equal(confirmAdds.length, 0, "the confirmation scan does not re-report the addition: " + confirmAdds.length);
+    assert.equal(confirmEvents.filter(function (e) { return e.kind === "playlist.item.removed"; }).length, 5, "but does confirm all five removals");
+
+    const log = (await P.store.recentChanges(500, null, null, null)) || [];
+    const adds7 = log.filter(function (e) { return e.kind === "playlist.item.added" && e.uri === uri("7"); });
+    assert.equal(adds7.length, 1, "one logged row for the added track: " + adds7.length);
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The activity name cache. Both write paths used `name: rec.userName || ""`, so
+// a feed record with no name erased a name an earlier tick had resolved, and
+// every change row for that friend fell back to "Unknown listener".
+// ---------------------------------------------------------------------------
+function feedHandler(fx, userEntity) {
+  return {
+    test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+    value: function () { return { entities: [{ userEntity: userEntity }] }; },
+  };
+}
+
+test("a tick whose record carries no name keeps the previously resolved name", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = fx.userId;
+    const uri = "spotify:track:" + "d".repeat(22);
+
+    const prof = await P.db.get("profiles", USER);
+    await P.db.put("profiles", Object.assign({}, prof || { id: USER }, { watchActivity: true }));
+    // An earlier tick resolved the name.
+    await P.store.setMeta("activityName:" + USER, { name: "Ari", avatar: "https://img/ari.jpg", uri: "spotify:user:" + USER });
+
+    // This tick carries an activity but no name and no username.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+    });
+    calls.handlers.push(feedHandler(fx, {
+      uri: "spotify:user:" + USER,
+      activity: { entityUri: uri, timestamp: new Date().toISOString(), isPlaying: true, contextUri: "" },
+    }));
+
+    const tick = await P.activity.tick({ net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} }, { force: true });
+    assert.equal(tick.state, "ok", "the tick ran: " + JSON.stringify(tick));
+
+    const meta = await P.store.getMeta("activityName:" + USER, null);
+    assert.ok(meta, "the name record still exists");
+    assert.equal(meta.name, "Ari", "the resolved name survived a nameless record: " + JSON.stringify(meta));
+    assert.equal(meta.avatar, "https://img/ari.jpg", "and so did the avatar");
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("a tick that carries a real name still updates it", async () => {
+  // The other direction, so the merge cannot simply freeze the stored value.
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = fx.userId;
+    const uri = "spotify:track:" + "e".repeat(22);
+
+    const prof = await P.db.get("profiles", USER);
+    await P.db.put("profiles", Object.assign({}, prof || { id: USER }, { watchActivity: true }));
+    await P.store.setMeta("activityName:" + USER, { name: "Ari", avatar: "", uri: "spotify:user:" + USER });
+
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+    });
+    calls.handlers.push(feedHandler(fx, {
+      uri: "spotify:user:" + USER,
+      name: "Ari renamed",
+      activity: { entityUri: uri, timestamp: new Date().toISOString(), isPlaying: true, contextUri: "" },
+    }));
+
+    await P.activity.tick({ net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} }, { force: true });
+
+    const meta = await P.store.getMeta("activityName:" + USER, null);
+    assert.equal(meta.name, "Ari renamed", "a real name replaces the old one: " + JSON.stringify(meta));
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// durationsFor: the watch gate used to run AFTER `seen[uri] = true`, so the
+// first record for a track — watched or not — decided whether anyone got its
+// duration. An unwatched friend listed first left the watched friend playing
+// the same track with durationMs 0, which disables the skip heuristic.
+// ---------------------------------------------------------------------------
+function oneFriendFeed(a, b) {
+  // Two records for the SAME track, in the order given.
+  const mk = function (user, name) {
+    return {
+      userEntity: {
+        uri: "spotify:user:" + user,
+        name: name,
+        activity: {
+          entityUri: "spotify:track:" + "a".repeat(22),
+          timestamp: new Date().toISOString(),
+          isPlaying: true,
+          contextUri: "",
+        },
+      },
+    };
+  };
+  return {
+    test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+    value: function () { return { entities: [mk(a, "Unwatched"), mk(b, "Watched")] }; },
+  };
+}
+
+test("an unwatched friend listed first does not steal the track duration", async () => {
+  // The watch gate ran AFTER `seen[uri] = true`, so the first record for a track
+  // — watched or not — decided whether anyone got its duration. With the
+  // unwatched friend listed first, the watched friend playing the SAME track got
+  // durationMs 0, and 0 disables the skip heuristic entirely (session.js gates
+  // on `previousPlay.durationMs > 0`).
+  //
+  // Observable as `priorSkipped`: a play that moved on well before the track
+  // ended. The watched friend plays track A for 30s of a 200s track, then moves
+  // to track B; with the duration known, `priorSkipped` is true.
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+
+    const UNWATCHED = "u".repeat(22);
+    const WATCHED = "v".repeat(22);
+    const TRACK_A = "spotify:track:" + "a".repeat(22);
+    const TRACK_B = "spotify:track:" + "b".repeat(22);
+
+    await P.db.put("profiles", { id: UNWATCHED, watchActivity: false });
+    const profW = await P.db.get("profiles", WATCHED);
+    await P.db.put("profiles", Object.assign({}, profW || { id: WATCHED }, { watchActivity: true }));
+    // A cached duration so the test needs no network. 200s.
+    await P.db.put("tracks", { uri: TRACK_A, durationMs: 200000, title: "A" });
+
+    // Every feed record lists the UNWATCHED friend FIRST, for the same track.
+    const setFeed = function (ts, uri) {
+      const mk = function (user, name) {
+        return {
+          userEntity: {
+            uri: "spotify:user:" + user,
+            name: name,
+            activity: { entityUri: uri, timestamp: new Date(ts).toISOString(), isPlaying: true, contextUri: "" },
+          },
+        };
+      };
+      calls.handlers = calls.handlers.filter(function (h) {
+        return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+      });
+      calls.handlers.push({
+        test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+        value: function () { return { entities: [mk(UNWATCHED, "Unwatched"), mk(WATCHED, "Watched")] }; },
+      });
+    };
+    const deps = function () {
+      return { net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} };
+    };
+
+    const now = Date.now();
+    setFeed(now, TRACK_A);
+    await P.activity.tick(deps(), { force: true });
+
+    // 30 seconds in: the watched friend moves to another track. 30s of a 200s
+    // track is well short, so the skip heuristic must fire.
+    setFeed(now + 30000, TRACK_B);
+    const t2 = await P.activity.tick(deps(), { force: true });
+    assert.equal(t2.state, "ok", "tick 2 ran: " + JSON.stringify(t2));
+
+    const plays = await P.store.playsFor(WATCHED, 0, 50);
+    const onB = plays.filter(function (pl) { return pl.trackUri === TRACK_B; });
+    assert.equal(onB.length, 1, "the watched friend played track B: " + plays.length + " plays total");
+    assert.equal(onB[0].priorSkipped, true, "the 30s play of a 200s track is flagged skipped");
+
+    // The unwatched friend never produces a play at all.
+    const uw = await P.store.playsFor(UNWATCHED, 0, 50);
+    assert.equal(uw.length, 0, "the unwatched friend produces no plays: " + uw.length);
+  } finally {
+    await P.db.close();
+  }
+});
+// ---------------------------------------------------------------------------
+// activityLastTick was written every tick and read nowhere (activityHealth.at
+// carries the same information and is the value the controller shows).
+// ---------------------------------------------------------------------------
+test("a tick does not write the unused activityLastTick row", async () => {
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+
+    const tick = await P.activity.tick(
+      { net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} },
+      { force: true }
+    );
+    assert.equal(tick.state, "ok", "the tick ran: " + JSON.stringify(tick));
+
+    const stale = await P.store.getMeta("activityLastTick", null);
+    assert.equal(stale, null, "no activityLastTick row was written: " + JSON.stringify(stale));
+
+    // The health record still carries the tick time, which is what is read.
+    const health = await P.store.getMeta("activityHealth", null);
+    assert.ok(health && health.at, "activityHealth.at is still written: " + JSON.stringify(health));
+    assert.equal(health.state, "ok", "and reports ok");
+  } finally {
+    await P.db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// An empty list that contradicts a declared total is a truncated read, not a
+// mass departure. Reporting it as `ok` emitted one "a follower left" row per
+// known follower.
+// ---------------------------------------------------------------------------
+test("an empty follower list that contradicts a declared total is degraded", async () => {
+  // An empty list that contradicts a declared total is a truncated read, not a
+  // mass departure. Reporting it as `ok` emitted one "a follower left" row per
+  // known follower.
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const ID = fx.userId;
+
+    // Drop the fixture's followers handler: it is registered first and would
+    // otherwise answer every request.
+    const dropFollowers = function () {
+      calls.handlers = calls.handlers.filter(function (h) {
+        let matches = false;
+        try { matches = h.test("https://api.spotify.com/v1/me/followers?market=from_token&limit=50") === true; } catch (e) { matches = false; }
+        if (matches) return false;
+        try { if (h.test("followers") === true) return false; } catch (e) { /* ignore */ }
+        return true;
+      });
+    };
+    const addFollowers = function (body) {
+      calls.handlers.push({
+        test: function (u) { return u.indexOf("followers") >= 0 || u.indexOf("following") >= 0; },
+        value: function () { return body; },
+      });
+    };
+    const fetch = function (dir) {
+      return P.profiles.fetchFollowersNet(
+        { net: P.net, db: P.db, store: P.store, config: P.config },
+        ID,
+        dir
+      );
+    };
+
+    // The endpoint says 5 followers but returns an empty array.
+    dropFollowers();
+    addFollowers({ profiles: [], total: 5 });
+    const res = await fetch("followers");
+    assert.equal(res.state, "degraded", "an empty list over a declared total must not read as ok: " + JSON.stringify(res));
+    assert.ok(String(res.error || "").indexOf("5") >= 0, "and must say what the endpoint reported: " + res.error);
+    assert.equal((res.ids || []).length, 0, "no follower ids are invented");
+
+    // A genuinely empty list with no declared total stays ok.
+    dropFollowers();
+    addFollowers({ profiles: [] });
+    const res2 = await fetch("followers");
+    assert.equal(res2.state, "ok", "an empty list with nothing declared is a real empty list: " + JSON.stringify(res2));
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("a nameless feed record keeps the cached avatar AND name", async () => {
+  // The avatar path only ran when `rec.avatar` was falsy, and it wrote
+  // `name: recA.userName || ""` — so a record carrying an avatar but no name
+  // erased the stored name. This drives that second site directly.
+  const { win, P, calls } = freshBoot();
+  try {
+    await clean(P);
+    const fx = fixtures();
+    stubHandlers(fx, calls);
+    const USER = fx.userId;
+
+    const prof = await P.db.get("profiles", USER);
+    await P.db.put("profiles", Object.assign({}, prof || { id: USER }, { watchActivity: true }));
+    // A name resolved earlier, with no avatar.
+    await P.store.setMeta("activityName:" + USER, { name: "Ari", avatar: "", uri: "spotify:user:" + USER });
+
+    // This record has no name at all, so the avatar pass runs and rewrites
+    // the meta row. It must not blank the name.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return h.test("https://spclient.wg.spotify.com/listening-activity/v1/feed") === false;
+    });
+    calls.handlers.push({
+      test: function (u) { return u.indexOf("/listening-activity/v1/feed") >= 0; },
+      value: function () {
+        return {
+          entities: [{
+            userEntity: {
+              uri: "spotify:user:" + USER,
+              // deliberately no name / username
+              activity: {
+                entityUri: "spotify:track:" + "f".repeat(22),
+                timestamp: new Date().toISOString(),
+                isPlaying: true,
+                contextUri: "",
+              },
+            },
+          }],
+        };
+      },
+    });
+
+    const tick = await P.activity.tick(
+      { net: P.net, db: P.db, store: P.store, config: P.config, _watchCache: {} },
+      { force: true }
+    );
+    assert.equal(tick.state, "ok", "the tick ran: " + JSON.stringify(tick));
+
+    const meta = await P.store.getMeta("activityName:" + USER, null);
+    assert.ok(meta, "the meta row still exists");
+    assert.equal(meta.name, "Ari", "the resolved name survived: " + JSON.stringify(meta));
+  } finally {
+    await P.db.close();
+  }
+});

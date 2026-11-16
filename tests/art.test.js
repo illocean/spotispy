@@ -346,3 +346,66 @@ test("sweep leaves a cover that a scan already resolved", async () => {
     globalThis.PWT_ART_DISABLED = false;
   }
 });
+
+test("sweep does not re-ask a URI that has exhausted its art attempts", async () => {
+  // A permanently unresolvable URI used to keep its old `at`, so it stayed at
+  // the head of every at-sorted sweep and consumed a slot forever, starving the
+  // newer gaps behind it. The negative cache already stops the network call;
+  // the sweep must stop *asking* too.
+  globalThis.PWT_ART_DISABLED = false;
+  var tried = [];
+  globalThis.PWT = {
+    util: { imageUrl: function (r) { return r; } },
+    art: {
+      artFor: function (uri) {
+        tried.push(uri);
+        return Promise.resolve("");
+      },
+    },
+    net: {
+      pool: function (items, _s, worker) {
+        return Promise.all(
+          items.map(function (item) {
+            return worker(item).then(function (v) { return { ok: true, value: v }; });
+          })
+        ).then(function (results) { return { results: results }; });
+      },
+    },
+    store: {},
+    db: {},
+  };
+
+  // The dead URI is OLDER, so without the fix it sorts first and takes the slot.
+  var deadUri = "spotify:track:dead0000000000000001";
+  var freshUri = "spotify:track:dead0000000000000002";
+  var deps = {
+    db: {
+      getAll: function (name) {
+        if (name === "tracks") {
+          return Promise.resolve([
+            { uri: deadUri, fetchedAt: 1 },
+            { uri: freshUri, fetchedAt: Date.now() },
+          ]);
+        }
+        if (name === "meta") {
+          return Promise.resolve([
+            { key: "art:" + deadUri, value: { url: "", at: 1, attempts: 6, v: 4 } },
+          ]);
+        }
+        return Promise.resolve([]);
+      },
+      get: function () { return Promise.resolve(null); },
+      put: function () { return Promise.resolve(); },
+    },
+    store: { getMeta: function () { return Promise.resolve(null); }, setMeta: function () { return Promise.resolve(); } },
+  };
+  try {
+    var out = await Art.sweep(deps, { limit: 1 });
+    // \`checked\` is the number of gaps the sweep decided to try. The exhausted 
+    // URI must not be among them, or it eats the single-slot budget forever.
+    assert.equal(out.checked, 1, "exactly one gap was worth trying: " + JSON.stringify(out));
+    assert.equal(out.skipped, undefined, "the sweep ran");
+  } finally {
+    globalThis.PWT_ART_DISABLED = false;
+  }
+});

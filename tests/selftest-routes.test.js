@@ -55,9 +55,12 @@ test("the self-test reports a client with no PlaylistAPI as degraded, not as a b
     const result = await P.telemetry.runSelfTest({ probeNetwork: true });
     const api = check(result, /playlist route|PlaylistAPI/i);
     assert.ok(api, "the check still runs when the route is missing");
-    assert.equal(api.ok, false, "without the route nothing could be read");
     assert.ok(/unsupported|missing|no playlist route/i.test(api.detail), "the reason names the route, not a transport failure: " + api.detail);
     assert.ok(!/unreachable/i.test(api.detail), "a missing API is not an unreachable host: " + api.detail);
+    // And it is not a failure either: the route does not exist on this build,
+    // so it must not raise a "hit a wall" alarm on a healthy client.
+    assert.equal(api.state, "skipped", "a missing capability is reported skipped, not failed: " + api.state);
+    assert.equal(api.ok, false, "and it is not counted as a pass: " + api.ok);
     stub.Platform.PlaylistAPI = saved;
   } finally {
     await P.db.close();

@@ -1,6 +1,6 @@
 /* eslint-disable */
 /**
- * Spotispy â€” artwork layer.
+ * Spotispy — artwork layer.
  *
  * Every Spotify entity the app renders (track/playlist/artist/album row,
  * profile, friend in the activity feed) can have its real artwork fetched
@@ -292,6 +292,25 @@
         var uid = row.key.slice("activityName:".length);
         gaps.push({ kind: "activityName", uri: "spotify:user:" + uid, key: row.key, value: value, at: value.at || 0 });
       }
+      // A URI whose cached negative has exhausted its attempts can never fill,
+      // so asking for it again only wastes a slot. Asking for it is what let a
+      // permanently unresolvable URI sit at the head of the `at`-sorted list
+      // and consume the budget on every sweep forever, starving the newer gaps.
+      var giveUp = {};
+      for (var gI = 0; gI < metaRows.length; gI++) {
+        var mRow = metaRows[gI];
+        if (!mRow || !mRow.key || mRow.key.indexOf("art:") !== 0) continue;
+        var mVal = mRow.value || {};
+        if (mVal.url) continue;
+        if (typeof mVal.attempts === "number" && mVal.attempts >= 6) giveUp[mRow.key.slice(4)] = true;
+      }
+      var stillOpen = function (uri) {
+        return !giveUp[uri];
+      };
+
+      gaps = gaps.filter(function (gap) {
+        return stillOpen(gap.uri);
+      });
       gaps.sort(function (a, b) {
         return a.at - b.at;
       });

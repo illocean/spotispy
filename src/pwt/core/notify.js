@@ -67,9 +67,11 @@
 
   /**
    * Single channel used by the pollers: toast when focused, OS otherwise.
-   * The OS channel is opt-in: with `notifyOs` off and Spotify unfocused there is
-   * no channel left, so this returns false and the caller's dedupe key is not
-   * stamped (a later real notification still gets through).
+   * The OS channel is off by preference, not by capability: `notifyOs: false`
+   * with Spotify unfocused leaves no channel, so this returns false and the
+   * caller's dedupe key is not stamped (a later real notification still gets
+   * through). It defaults to true — a notification needs the OS channel exactly
+   * when Spotify is minimised, which is when the user is not watching.
    */
   function emit(title, body) {
     var s = settings();
@@ -77,7 +79,10 @@
     if (!focused() && s.notifyOs !== false) sent = osNotify(title, body);
     if (!sent) {
       // Focused, or OS notifications declined: the in-app toast is the channel.
-      if (s.notifyToast === false && !focused()) return false;
+      // `notifyToast: false` turns that channel off, so honour it here too —
+      // gating it on `!focused()` made the toggle work only while Spotify was
+      // in the background, which is the opposite of what the setting says.
+      if (s.notifyToast === false) return false;
       return toast(body ? title + " — " + body : title);
     }
     return true;

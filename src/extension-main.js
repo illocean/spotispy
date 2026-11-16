@@ -63,6 +63,33 @@
       return m ? m[1] : "";
     }
 
+    /**
+     * A context-menu action that writes must say so when the write fails.
+     *
+     * These handlers only toasted on success, so a rejected write (quota
+     * exhausted, storage blocked, private-mode denial) left the user with no
+     * feedback whatsoever: the menu item appeared to do nothing, and the
+     * rejection surfaced only as an unhandled promise rejection in the console.
+     */
+    function reportFailure(where) {
+      return function (e) {
+        var message = String((e && (e.message || e)) || e).split("\n")[0];
+        try {
+          if (P.telemetry && P.telemetry.captureError) P.telemetry.captureError("extension." + where, e);
+        } catch (e2) {
+          /* telemetry is best effort */
+        }
+        try {
+          if (P.notify && P.notify.toast) {
+            P.notify.toast("Spotispy: " + where + " failed — " + message);
+          }
+        } catch (e3) {
+          /* no toast channel; the console still carries the detail */
+        }
+        root.console && root.console.error && root.console.error("[Spotispy] " + where + " failed", e);
+      };
+    }
+
     new S.ContextMenu.Item(
       "Watch playlist",
       function (uris) {
@@ -72,7 +99,7 @@
             P.notify.toast("Watching this playlist — the next scan records its current state");
             var booted = P.boot.instance();
             if (booted) booted.scheduler.runNow({ scope: "playlists", force: true });
-          });
+          }).catch(reportFailure("watch playlist"));
         });
       },
       function (uris) {
@@ -89,7 +116,7 @@
           var id = P.util.playlistId(u);
           if (id) P.store.removeWatch("playlist", id).then(function () {
             P.notify.toast("Unwatched playlist");
-          });
+          }).catch(reportFailure("unwatch playlist"));
         });
       },
       function (uris) {
@@ -108,7 +135,7 @@
             P.notify.toast("Watching this profile — the next scan records its current state");
             var booted = P.boot.instance();
             if (booted) booted.scheduler.runNow({ scope: "profiles", force: true });
-          });
+          }).catch(reportFailure("watch profile"));
         });
       },
       function (uris) {
@@ -124,11 +151,14 @@
         uris.forEach(function (u) {
           var id = P.util.userId(u);
           if (!id) return;
+          // Returned, not just called: without `return` the chain resolved
+          // before the write settled, so the success toast fired even when the
+          // write rejected, and the rejection escaped the catch below.
           P.db.get("profiles", id).then(function (p) {
-            P.db.put("profiles", Object.assign({ id: id }, p || {}, { watchActivity: true }));
+            return P.db.put("profiles", Object.assign({ id: id }, p || {}, { watchActivity: true }));
           }).then(function () {
             P.notify.toast("Activity watching on for this profile");
-          });
+          }).catch(reportFailure("watch activity"));
         });
       },
       function (uris) {

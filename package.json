@@ -4,8 +4,8 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node --test \"tests/*.test.js\"",
-    "test:ui": "node --test \"tests/ui/*.test.js\"",
+    "test": "node --test --test-isolation=process --test-timeout=60000 --test-force-exit \"tests/*.test.js\"",
+    "test:ui": "node --test --test-isolation=process --test-timeout=60000 --test-force-exit \"tests/ui/*.test.js\"",
     "test:all": "npm test && npm run test:ui",
     "build": "node tools/build.js"
   },

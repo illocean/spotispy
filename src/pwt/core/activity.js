@@ -21,6 +21,10 @@
   }
 
   var lastHash = "";
+  // How many watched friends the last full tick saw in the feed. An unchanged
+  // feed has the same people in it, so the fast path below can reuse this
+  // instead of re-running the watch gate just to answer "is anyone listening".
+  var lastOnline = 0;
 
   /** Fetch the feed through the chain: listening-activity -> buddylist. */
   async function fetchFeed(deps) {
@@ -79,7 +83,11 @@
     var hash = pwt.util.hash(JSON.stringify(feed.records));
     if (hash === lastHash && !opts.force) {
       await store.setMeta("activityHealth", { state: "ok", source: feed.source, at: now });
-      return { state: "ok", unchanged: true, source: feed.source, records: feed.records };
+      // `online` is "watched friends in the feed this tick", not "just
+      // appeared": the scheduler keys the boost cadence on it, and a listener
+      // who keeps playing must keep the fast poll engaged. An unchanged feed
+      // has the same people in it, so the previous tick's count is exact.
+      return { state: "ok", unchanged: true, source: feed.source, online: lastOnline, records: feed.records };
     }
     lastHash = hash;
 
@@ -112,18 +120,28 @@
         isPlaying: rec.isPlaying,
         durationMs: durations[rec.trackUri] || 0,
       });
-      if (out.online) {
-        online++;
-        if (!out.online.first) transitions.push({ userId: userId, kind: "activity.online", ts: out.online.ts, name: rec.userName });
-      }
+      if (out.online && !out.online.first) transitions.push({ userId: userId, kind: "activity.online", ts: out.online.ts, name: rec.userName });
       plays = plays.concat(out.plays);
       if (out.end) sessions.push(out.end);
       states[userId] = st;
       // Keep any avatar resolved by an earlier tick: the feed rarely carries
       // one, and overwriting the cache with "" destroys it. The art sweep below
       // still fills a genuinely missing avatar.
+      //
+      // Same reasoning for the NAME, which this used to overwrite with "" on any
+      // record whose payload carried no name. That erased a name an earlier tick
+      // had resolved, and the controller's displayOf lookup then fell back to
+      // "Unknown listener" for every change row about that friend.
       if (rec.avatar || !(await hasAvatar(store, userId))) {
-        await store.setMeta("activityName:" + userId, { name: rec.userName || "", avatar: rec.avatar || "", uri: rec.userUri });
+        var existingMeta = null;
+        try {
+          existingMeta = await store.getMeta("activityName:" + userId, null);
+        } catch (eMeta) {
+          existingMeta = null;
+        }
+        var keepName = rec.userName || (existingMeta && existingMeta.name) || "";
+        var keepAvatar = rec.avatar || (existingMeta && existingMeta.avatar) || "";
+        await store.setMeta("activityName:" + userId, { name: keepName, avatar: keepAvatar, uri: rec.userUri });
       }
     }
 
@@ -152,7 +170,20 @@
                 : "";
           if (resolved) {
             recA.avatar = resolved;
-            await store.setMeta("activityName:" + fid, { name: recA.userName || "", avatar: resolved, uri: recA.userUri });
+            // Merge, do not clobber: this path fires only because the record had
+            // no avatar, and its payload may equally carry no name. Writing
+            // `name: recA.userName || ""` here erased a name resolved earlier.
+            var priorForArt = null;
+            try {
+              priorForArt = await store.getMeta("activityName:" + fid, null);
+            } catch (eArt0) {
+              priorForArt = null;
+            }
+            await store.setMeta("activityName:" + fid, {
+              name: recA.userName || (priorForArt && priorForArt.name) || "",
+              avatar: resolved,
+              uri: recA.userUri,
+            });
           }
         } catch (eArt) {
           /* avatar is decorative; a miss must not break the tick */
@@ -184,6 +215,13 @@
       states[uid] = stx;
     }
 
+    // "Online" is how many watched friends are in this tick's feed — the
+    // scheduler's boost cadence depends on it staying true while someone keeps
+    // listening. `seen` is only set past the watch gate, so an unwatched
+    // friend never counts.
+    online = Object.keys(seen).length;
+    lastOnline = online;
+
     var tickRows = [];
     for (var u in states) {
       // `states` only holds watched friends, so no per-row gate is needed.
@@ -202,18 +240,23 @@
     if (plays.length) await store.addPlays(plays);
     if (sessions.length) await store.putSessions(sessions);
     if (tickRows.length) {
-      var existing = (await db.getAll("dayTicks")) || [];
-      var byKey = {};
-      for (var e = 0; e < existing.length; e++) byKey[existing[e].day + ":" + existing[e].userId] = existing[e];
+      // Read only the aggregates this tick touches. This used to `getAll` the
+      // whole store, so every tick paid for every friend-day ever retained (a
+      // few hundred rows at 10 friends over 90 days, growing without bound) in
+      // order to update the handful of days actually being ticked now.
+      var day = pwt.diff.dayKey(now);
       var ops = [];
       for (var t = 0; t < tickRows.length; t++) {
         var row = tickRows[t];
-        var day = pwt.diff.dayKey(now);
         var k = day + ":" + row.userId;
-        var agg = byKey[k];
+        var agg = null;
+        try {
+          agg = await db.get("dayTicks", k);
+        } catch (eGet) {
+          /* an unreadable aggregate is rebuilt from this tick onward */
+        }
         if (!agg) {
           agg = { key: k, day: day, userId: row.userId, ticks: [] };
-          byKey[k] = agg;
         }
         agg.ticks.push({ ts: now, hidden: row.hidden });
         if (agg.ticks.length > 2000) agg.ticks = agg.ticks.slice(-2000);
@@ -223,7 +266,8 @@
     }
 
     await store.setMeta("activityHealth", { state: "ok", source: feed.source, at: now });
-    await store.setMeta("activityLastTick", now);
+    // (`activityLastTick` used to be written here and read nowhere — the health
+    // record above carries the same `at`, and that is what the controller shows.)
     return {
       state: "ok",
       source: feed.source,
@@ -279,11 +323,15 @@
     for (var i = 0; i < records.length; i++) {
       var uri = records[i].trackUri;
       if (seen[uri]) continue;
-      seen[uri] = true;
       // Same watch gate as the avatar pass: an unwatched person's tracks are
-      // not looked up just because they appear in the feed.
+      // not looked up just because they appear in the feed. This has to be
+      // checked BEFORE the key is claimed, or the first record for a track —
+      // watched or not — decides whether anyone gets its duration. An unwatched
+      // friend listed first left the watched friend's play with durationMs 0,
+      // which disables the skip heuristic for it.
       var who = String(records[i].userUri || "").replace(/^spotify:user:/, "");
       if (who && !(await watchedFor(deps, who))) continue;
+      seen[uri] = true;
       var row = await db.get("tracks", uri);
       if (row && row.durationMs) out[uri] = row.durationMs;
       else {
@@ -307,6 +355,7 @@
 
   function reset() {
     lastHash = "";
+    lastOnline = 0;
   }
 
   return { fetchFeed: fetchFeed, tick: tick, reset: reset };

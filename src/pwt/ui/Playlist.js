@@ -111,6 +111,9 @@
         "div",
         { class: "pwt-kpis pwt-kpis-tight" },
         h(kit.Stat, { value: m.trackCount == null ? "—" : m.trackCount, label: "tracks" }),
+        // Only shown when the client exposed a like counter and no follower
+        // count: labelled "likes", never passed off as followers.
+        m.followers == null && m.likes != null ? h(kit.Stat, { value: m.likes, label: "likes" }) : null,
         h(kit.Stat, { value: m.daysSinceUpdate == null ? "—" : m.daysSinceUpdate, label: "days quiet" }),
         h(kit.Stat, { value: changes.length, label: "changes" })
       ),

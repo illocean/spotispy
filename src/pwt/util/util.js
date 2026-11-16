@@ -110,7 +110,11 @@
 
   /** "3m ago", "2h ago", "5d ago". */
   function ago(ts, now) {
-    if (ts == null || !isFinite(ts)) return "never";
+    // 0 is a value, not an absence: `ts == null` does not catch it, so `ago(0)`
+    // computed Date.now() - 0 and rendered "20773d ago". A zero timestamp means
+    // "never happened" (the scanners persist lastSyncedAt: 0 when a scan fails),
+    // so it takes the same branch as a missing one.
+    if (ts == null || ts === 0 || !isFinite(ts)) return "never";
     var diff = Math.max(0, (now == null ? Date.now() : now) - ts);
     var s = Math.floor(diff / 1000);
     if (s < 45) return "just now";
@@ -188,11 +192,22 @@
     return d.getFullYear() + "-" + (m < 10 ? "0" + m : m) + "-" + (d.getDate() < 10 ? "0" + d.getDate() : d.getDate());
   }
 
-  /** The last N day keys, oldest first, ending today. */
+  /**
+   * The last N day keys, oldest first, ending today.
+   *
+   * Steps back a calendar day at a time rather than subtracting 86400000ms:
+   * `new Date(ts - 86400000)` crosses a DST boundary at the wrong local hour, so
+   * in a DST zone the series skipped a day at spring-forward and repeated one at
+   * fall-back. `dayLabel` already refuses that arithmetic; this was the last place
+   * using it.
+   */
   function lastDays(n, now) {
-    var base = now == null ? Date.now() : now;
+    var d = new Date(now == null ? Date.now() : now);
     var out = [];
-    for (var i = n - 1; i >= 0; i--) out.push(todayKey(base - i * 86400000));
+    for (var i = n - 1; i >= 0; i--) {
+      var day = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+      out.push(todayKey(day.getTime()));
+    }
     return out;
   }
 

@@ -356,7 +356,7 @@ test("the self-test reports a failing check instead of throwing", async () => {
   const result = await P.telemetry.runSelfTest({ db: P.db, store: brokenStore, bus: P.bus, probeNetwork: false });
   assert.ok(result.fail >= 1, "the broken store check failed");
   assert.ok(result.checks.every(function (c) { return typeof c.name === "string" && typeof c.ok === "boolean"; }));
-  assert.ok(result.checks.some(function (c) { return !c.ok && /boom/.test(c.detail); }), "the failure detail is kept");
+  assert.ok(result.checks.some(function (c) { return c.state === "fail" && /boom/.test(c.detail); }), "the failure detail is kept");
 });
 
 test("route loads are timed so bottlenecks show up", async () => {
@@ -364,6 +364,96 @@ test("route loads are timed so bottlenecks show up", async () => {
   const entries = P.telemetry._entries();
   assert.ok(entries.length > 0, "telemetry captured something");
   assert.ok(P.telemetry.slowest(5).length > 0, "slowest list");
+});
+
+test("a profile-level log row offers no dead open button", async () => {
+  const { P, win } = state;
+  // "open" on a row with no playlist target did nothing at all — a silent
+  // failure. Only playlist rows get the button.
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  try {
+    P.react.mount(el, P.ui.Log, {
+      loading: false,
+      filter: { query: "", kind: "", level: "" },
+      rows: [
+        { level: "profile", kind: "profile.name.changed", target: "u1", targetName: "Ari", title: "renamed", ts: Date.now() },
+        { level: "playlist", kind: "playlist.added", target: "pl1", targetName: "Road Trip", title: "added", ts: Date.now(), uri: "spotify:playlist:pl1" },
+      ],
+      onOpenRow: function () {},
+    });
+    await waitFor(function () { return el.querySelectorAll("tbody tr").length === 2; }, "both rows render");
+    const opens = Array.from(el.querySelectorAll("tbody tr")).map(function (tr) {
+      return !!tr.querySelector("button");
+    });
+    assert.deepEqual(opens, [false, true], "only the playlist row has an open button: " + JSON.stringify(opens));
+  } finally {
+    try { if (el._pwtRoot) el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
+});
+
+test("a slow load that finishes after a route change cannot repopulate the old route", async () => {
+  const { P, win } = state;
+  // `goRoute` drops the previous route's payload so the new route cannot render
+  // the old one's data — but a load still in flight used to publish its result
+  // afterwards, pushing the abandoned route's rows into the current route's
+  // props. App renders from the live `route`, so this is only visible in the
+  // props a view is handed.
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  const RealApp = P.ui.App;
+  let lastProps = null;
+  P.ui.App = function (props) {
+    lastProps = props;
+    return RealApp(props);
+  };
+  const realChanges = P.store.recentChanges;
+  let release;
+  const gate = new Promise(function (r) { release = r; });
+  try {
+    P.store.recentChanges = function () {
+      const args = arguments;
+      return gate.then(function () { return realChanges.apply(P.store, args); });
+    };
+
+    P.react.mount(el, P.ui.AppController, { route: "log" });
+    await waitFor(function () { return el.querySelector('[data-pwt-nav="overview"]'); }, "the nav bar");
+    el.querySelector('[data-pwt-nav="overview"]').click();
+    await waitFor(function () { return lastProps && lastProps.route === "overview"; }, "the overview route");
+    const rowsBefore = lastProps.rows;
+
+    release();
+    await new Promise(function (r) { setTimeout(r, 200); });
+
+    assert.equal(lastProps.route, "overview", "the route is still the overview");
+    assert.deepEqual(lastProps.rows, rowsBefore, "the abandoned load published nothing");
+  } finally {
+    P.store.recentChanges = realChanges;
+    P.ui.App = RealApp;
+    try { if (el._pwtRoot) el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
+});
+
+test("a database read failure is reported, never rendered as zero rows", async () => {
+  const { P, win } = state;
+  // `counts()` used to swallow the error and return {}, and Settings printed
+  // "0 change rows" — a read failure indistinguishable from an empty log.
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  const realCount = P.db.count;
+  P.db.count = async function () { throw new Error("database is sealed"); };
+  try {
+    P.react.mount(el, P.ui.AppController, { route: "settings" });
+    const shown = await waitFor(function () { return el.querySelector(".pwt-error"); }, "the read failure");
+    assert.ok(/could not read the local database/i.test(shown.textContent), "the failure is named: " + shown.textContent);
+    assert.ok(!/0\s*change rows/.test(el.textContent), "no fabricated zero counts");
+  } finally {
+    P.db.count = realCount;
+    try { if (el._pwtRoot) el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
 });
 
 test("the built bundle boots as a custom app and renders the overview", async () => {
@@ -716,4 +806,37 @@ test("a mosaic cover is composited as four 2x2 layers, not one tile", async () =
   const matches = html.match(/i\.scdn\.co\/image\//g) || [];
   assert.equal(matches.length, 4, "all four mosaic tiles are in the background");
   assert.ok(html.indexOf("50% 50%") >= 0, "each tile sized to a quarter of the cover");
+});
+
+test("opening an unwatched playlist shows an honest empty state", async () => {
+  const { P, win } = state;
+  // A playlist the user never watched has no stored row. Opening one used to
+  // render "Untitled playlist" over a table with no columns — a phantom page for
+  // data that does not exist.
+  //
+  // The fixture always watches a playlist, so the controller would render that
+  // real one instead. Drop the watch for the duration and put it back.
+  const seeded = ((await P.db.getAll("watches")) || []).filter(function (w) {
+    return w.kind === "playlist";
+  });
+  unmountControllers();
+  for (const w of seeded) await P.store.removeWatch("playlist", w.id);
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  try {
+    P.react.mount(el, P.ui.AppController, {
+      route: "playlist",
+      initial: { playlistId: "neverWatched1234567" },
+    });
+    const shown = await waitFor(function () {
+      const t = el.textContent;
+      return /Playlist not watched/i.test(t) ? t : null;
+    }, "the not-watched empty state");
+    assert.ok(/not watched/i.test(shown), "the view says it is not watched: " + shown.slice(0, 120));
+    assert.ok(!/Untitled playlist/.test(shown), "no phantom title: " + shown.slice(0, 120));
+  } finally {
+    try { if (el._pwtRoot) el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+    if (el.parentNode) el.parentNode.removeChild(el);
+    for (const w of seeded) await P.store.putWatch(w);
+  }
 });

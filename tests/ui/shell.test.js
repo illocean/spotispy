@@ -96,6 +96,33 @@ test("the shell renders a navigation bar with every route and back/forward", asy
   el.remove();
 });
 
+test("the error boundary is built once React is present, and never caches its absence", () => {
+  const { win, P } = state;
+  // `Spicetify` is installed by the host after this module loads, so the first
+  // call can legitimately find no React. If a miss were ever cached, every view
+  // would stay unprotected for the whole session with nothing on screen to say
+  // so. `boundaryClass` is only assigned on success, so it cannot be — this
+  // test pins that.
+  const App = P.ui.App;
+  assert.equal(typeof App.errorBoundary, "function", "the boundary factory is exposed for this check");
+
+  const saved = globalThis.Spicetify.React;
+  App.errorBoundary.reset();
+  try {
+    globalThis.Spicetify.React = undefined;
+    assert.equal(App.errorBoundary(), null, "with no React there is no boundary yet");
+
+    globalThis.Spicetify.React = saved; // the host finishes installing
+    const built = App.errorBoundary();
+    assert.ok(built, "a boundary is built as soon as React is available");
+    assert.equal(App.errorBoundary(), built, "and it is cached once built");
+  } finally {
+    globalThis.Spicetify.React = saved;
+    App.errorBoundary.reset();
+  }
+  void win;
+});
+
 test("the scan summary says what the scan did, even when nothing changed", async () => {
   const { P, win } = state;
   const el = win.document.createElement("div");

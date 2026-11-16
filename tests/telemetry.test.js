@@ -98,5 +98,7 @@ test("runSelfTest reports a failing check instead of throwing", async () => {
     probeNetwork: false,
   });
   assert.ok(result.fail >= 1);
-  assert.ok(result.checks.some((c) => !c.ok && /store down/.test(c.detail)));
+  // A real failure is `state === "fail"`. (`ok` is false for a *skipped* check
+  // too, so `!ok` no longer identifies a failure on its own.)
+  assert.ok(result.checks.some((c) => c.state === "fail" && /store down/.test(c.detail)));
 });

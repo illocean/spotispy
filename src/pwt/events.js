@@ -95,7 +95,17 @@
    * change, while a genuine second edit on a later day is its own row.
    */
   function rowKey(r) {
-    var day = new Date(r.sourceDate != null ? r.sourceDate : r.ts).toISOString().slice(0, 10);
+    // Local day, matching diff.dayKey — the aggregate bucket and every label
+    // the UI renders use local days. toISOString() buckets by UTC, so for part
+    // of the day in any timezone east or west of UTC the row key's day and the
+    // aggregate's day disagree: the same fact gets two rows (one per local day
+    // it was seen on) and its aggregate lands in the other day's bucket.
+    // Inlined rather than calling diff.dayKey: this module is pure by design
+    // and must not reach back into PWT.
+    var when = new Date(r.sourceDate != null ? r.sourceDate : r.ts);
+    var mo = when.getMonth() + 1;
+    var da = when.getDate();
+    var day = when.getFullYear() + "-" + (mo < 10 ? "0" + mo : mo) + "-" + (da < 10 ? "0" + da : da);
     return [r.level, r.target, r.kind, r.uri || "", day, r.detail || ""].join("\u0001");
   }
 

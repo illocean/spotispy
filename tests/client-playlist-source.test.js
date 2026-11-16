@@ -149,8 +149,139 @@ test("fetchMeta prefers the client's own playlist metadata", async () => {
     const meta = await Playlists.fetchMeta(ID);
     assert.equal(meta.name, "Night Drive", "the name came from the client route");
     assert.equal(meta.coverUrl, "https://i.scdn.co/image/abc");
-    assert.equal(meta.followers, 42, "a real follower count, not a placeholder");
     assert.equal(calls.playlistApi.getMetadata.length, 1, "the client route was asked once");
+    // The client route reports a LIKE counter (`totalLikes`), not a follower
+    // count. It used to be mapped onto `followers`, which is the first source in
+    // the chain and therefore wins over every later one — so a playlist whose
+    // client metadata carried a like count showed it under the "followers"
+    // label. Leaving it null hands the real count to `coreMeta`/`apiPlaylist`.
+    assert.ok(meta.followers == null, "a like count is not reported as a follower count: " + meta.followers);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("a source that names followers is used when the client route cannot answer", async () => {
+  // The count is not dropped, just sourced honestly. The client route is tried
+  // first and its payload has no followers field at all, so the Web API's
+  // `followers.total` has to be the one that lands.
+  const { P, calls } = fresh();
+  try {
+    // No client playlist registered: the chain falls through to HTTP.
+    calls.handlers.push({
+      test: function (u) {
+        return String(u).indexOf("/v1/playlists/" + ID + "?") >= 0;
+      },
+      value: {
+        name: "Night Drive",
+        images: [{ url: "https://i.scdn.co/image/abc" }],
+        owner: { id: "someone" },
+        followers: { total: 42 },
+        tracks: { total: 12 },
+      },
+    });
+    const meta = await Playlists.fetchMeta(ID);
+    assert.equal(meta.followers, 42, "the follower count comes from the Web API's followers.total: " + meta.followers);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("keeps a like counter out of the followers field when nothing else answers", async () => {
+  // The client route's payload has a LIKE counter, not a followers field. With
+  // the HTTP chain unreachable there is no honest follower count to be had, so
+  // the like counter must NOT be presented as one — it is carried separately and
+  // the view labels it "likes".
+  const { P, calls } = fresh();
+  try {
+    pa.addPlaylist(calls, { id: ID, name: "Night Drive", cover: "https://i.scdn.co/image/abc", followers: 999, owner: "someone" });
+    // Make the Web API unreachable so it cannot supply a real count.
+    calls.handlers = calls.handlers.filter(function (h) {
+      return String(h.test("https://api.spotify.com/v1/playlists/" + ID + "?market=from_token")).indexOf("false") >= 0;
+    });
+    const meta = await Playlists.fetchMeta(ID);
+    assert.ok(meta.followers == null, "a like counter is never shown as a follower count: " + meta.followers);
+    assert.equal(meta.likesOnly, 999, "the like counter is reported under its own name: " + meta.likesOnly);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("recovers the follower count from the Web API when the client route has none", async () => {
+  // The client route answers name and cover but carries only a like counter, so
+  // the old "fill followers from whichever source answered first" left the count
+  // permanently missing. Ask specifically for it from a source that names it.
+  const { P, calls } = fresh();
+  try {
+    pa.addPlaylist(calls, { id: ID, name: "Night Drive", cover: "https://i.scdn.co/image/abc", followers: 999, owner: "someone" });
+    calls.handlers.push({
+      test: function (u) {
+        return String(u).indexOf("/v1/playlists/" + ID + "?") >= 0;
+      },
+      value: {
+        name: "Night Drive",
+        images: [{ url: "https://i.scdn.co/image/abc" }],
+        owner: { id: "someone" },
+        followers: { total: 42 },
+        tracks: { total: 12 },
+      },
+    });
+    const meta = await Playlists.fetchMeta(ID);
+    assert.equal(meta.followers, 42, "the real count wins over the like counter: " + meta.followers);
+    assert.ok(meta.likesOnly == null, "and the fallback is not flagged when a real count was found: " + meta.likesOnly);
+  } finally {
+    await P.db.close();
+  }
+});
+
+test("clientContents: an episode in a complete playlist does not mark it truncated", async () => {
+  // The defect: uris holds only spotify:track: entries while totalLength
+  // counts every item, so a complete playlist of 10 tracks plus one podcast
+  // episode compared 10 < 11 and was "capped" on every scan. A capped read
+  // reseeds instead of diffing, so such a playlist never logged a change.
+  const s = require("../src/pwt/core/sources.js");
+  const mk = function (nTracks, nEpisodes, totalLength) {
+    const items = [];
+    for (let i = 0; i < nTracks; i++) items.push({ uri: pa.trackUri(i) });
+    for (let i = 0; i < nEpisodes; i++) items.push({ uri: "spotify:episode:" + String(900000000000000000000 + i).slice(-22) });
+    return { items: items, totalLength: totalLength == null ? items.length : totalLength };
+  };
+
+  const withEpisode = s.SOURCES.clientContents.parse(mk(10, 1, 11));
+  assert.equal(withEpisode.uris.length, 10, "the ten tracks are all read");
+  assert.equal(withEpisode.items, 11, "eleven items were carried");
+  assert.equal(withEpisode.truncated, false, "a complete read that merely contains an episode is not truncated");
+
+  const plain = s.SOURCES.clientContents.parse(mk(10, 0, 10));
+  assert.equal(plain.truncated, false, "a complete playlist of only tracks is not truncated");
+});
+
+test("clientContents: a page shorter than the declared total is truncated", async () => {
+  // The other direction, so the fix cannot simply disable the check.
+  const s = require("../src/pwt/core/sources.js");
+  const mk = function (nTracks, totalLength) {
+    const items = [];
+    for (let i = 0; i < nTracks; i++) items.push({ uri: pa.trackUri(i) });
+    return { items: items, totalLength: totalLength };
+  };
+
+  assert.equal(s.SOURCES.clientContents.parse(mk(10, 500)).truncated, true, "500 claimed, 10 returned: truncated");
+  assert.equal(s.SOURCES.clientContents.parse(mk(10, 11)).truncated, true, "11 claimed, 10 returned: truncated");
+
+  // With no declared total there is nothing to contradict, so no claim is made.
+  const bare = mk(10, undefined);
+  delete bare.totalLength;
+  assert.equal(s.SOURCES.clientContents.parse(bare).truncated, false, "no totalLength means no truncation claim");
+});
+
+test("fetchContents still reports a genuinely short client read as capped", async () => {
+  // End to end: the parse flag has to reach the fetchContents result.
+  const { P, calls } = fresh();
+  try {
+    pa.addPlaylist(calls, { id: ID, total: 500, tracks: [{ uri: pa.trackUri(9) }] });
+    const res = await Playlists.fetchContents(ID);
+    assert.equal(res.capped, true, "fewer items than totalLength is still capped");
+    assert.equal(res.total, 500, "and the declared total is preserved");
   } finally {
     await P.db.close();
   }

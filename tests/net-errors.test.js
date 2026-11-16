@@ -310,7 +310,7 @@ test("the self-test reports a failing client playlist route, without a fake 429"
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
     var pl = result.checks.filter(function (c) { return /Playlist route/.test(c.name); })[0];
     assert.ok(pl, "the playlist-route check ran");
-    assert.equal(pl.ok, false, "the route genuinely did not answer");
+    assert.equal(pl.state, "fail", "the route genuinely did not answer");
     assert.ok(!/429/.test(pl.detail), "the detail never invents a rate limit: " + pl.detail);
     assert.ok(/failed/i.test(pl.detail), "the detail says the route failed: " + pl.detail);
   } finally {
@@ -325,6 +325,14 @@ test("a resolved {code:429,message:'Failed to fetch'} body is unreachable, not a
     // error body whose message is the renderer's transport-failure signature,
     // with a bogus 429 code attached. It must never read as a rate limit.
     stub.CosmosAsync.get = async function () { return { code: 429, message: "Failed to fetch" }; };
+    // The client playlist route is PRESENT (the check is about the body it
+    // answers with, not about a missing route). Without this the check is
+    // skipped for "no such route", which is a different thing entirely.
+    stub.Platform = stub.Platform || {};
+    stub.Platform.PlaylistAPI = {
+      getContents: async function () { return { code: 429, message: "Failed to fetch" }; },
+      getMetadata: async function () { return { code: 429, message: "Failed to fetch" }; },
+    };
     var text = P.net.describeError({ code: 429, message: "Failed to fetch" });
     assert.ok(!/429/.test(text), "describeError never invents a 429 for a transport failure: " + text);
     assert.ok(/no response from the endpoint/i.test(text), "it says the endpoint did not answer: " + text);
@@ -334,7 +342,7 @@ test("a resolved {code:429,message:'Failed to fetch'} body is unreachable, not a
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
     var pl = result.checks.filter(function (c) { return /Playlist route/.test(c.name); })[0];
     assert.ok(pl, "the playlist-route check ran");
-    assert.equal(pl.ok, false, "the route genuinely did not answer");
+    assert.equal(pl.state, "fail", "the route genuinely did not answer");
     assert.ok(!/429/.test(pl.detail), "the selftest never invents a rate limit: " + pl.detail);
   } finally {
     P.db.close();
@@ -427,7 +435,7 @@ test("the self-test reports a message-only transport body as a failure, not a lo
     var result = await P.telemetry.runSelfTest({ probeNetwork: true });
     var api = result.checks.filter(function (c) { return /Profile route/.test(c.name); })[0];
     assert.ok(api, "the profile-route check ran");
-    assert.equal(api.ok, false, "the route did not answer");
+    assert.equal(api.state, "fail", "the route did not answer");
     assert.ok(/failed to fetch/i.test(api.detail), "the body's own reason is shown: " + api.detail);
     assert.ok(!/429/.test(api.detail), "no fabricated 429: " + api.detail);
   } finally {
@@ -521,4 +529,30 @@ test("the shared bodyError helper flags transport failures and classifies them n
   } finally {
     P.db.close();
   }
+});
+
+test("buddylist does not invent a play state when the payload has none", () => {
+  // The legacy buddylist carries no play/pause flag. It used to hardcode
+  // isPlaying: true, so session.apply saw a resume on every record: a pause was
+  // never observed and a pause/resume cycle was never recorded.
+  const s = require("../src/pwt/core/sources.js");
+  const base = {
+    friends: [
+      { user: { uri: "spotify:user:aaaaaaaaaaaaaaaaaaaaaa", name: "Ari" }, track: { uri: "spotify:track:" + "b".repeat(22), artist: { uri: "spotify:artist:" + "c".repeat(22) } }, timestamp: 1700000000000 },
+    ],
+  };
+
+  const noFlag = s.normalizeBuddylist(JSON.parse(JSON.stringify(base)));
+  assert.equal(noFlag.length, 1, "the record is normalised");
+  assert.ok(noFlag[0].isPlaying === undefined, "an absent flag stays unknown, not true: " + noFlag[0].isPlaying);
+
+  const withPause = JSON.parse(JSON.stringify(base));
+  withPause.friends[0].isPlaying = false;
+  const paused = s.normalizeBuddylist(withPause);
+  assert.equal(paused[0].isPlaying, false, "an explicit false is honoured: " + paused[0].isPlaying);
+
+  const withPlay = JSON.parse(JSON.stringify(base));
+  withPlay.friends[0].isPlaying = true;
+  const playing = s.normalizeBuddylist(withPlay);
+  assert.equal(playing[0].isPlaying, true, "an explicit true is honoured");
 });

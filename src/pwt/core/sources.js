@@ -1,8 +1,8 @@
 /* eslint-disable */
 /**
- * Spotispy â€” every endpoint in one place (proposal Â§7.1).
+ * Spotispy — every endpoint in one place (proposal §7.1).
  *
- * Request shapes are the ones recorded in the proposal (Â§3, Â§3A, Â§3B) and
+ * Request shapes are the ones recorded in the proposal (§3, §3A, §3B) and
  * re-implemented from the reference implementations' *behaviour*, never copied.
  * When Spotify breaks a route, fix it here.
  *
@@ -67,6 +67,20 @@
   }
 
   /**
+   * A stable identity for a cover ref, for the "cover changed" diff.
+   *
+   * One definition, used by every source: `sources.js` used to derive it three
+   * different ways, so the same artwork produced three different hashes and a
+   * metadata source switch logged a cover change on its own. Nothing but the
+   * artwork may enter it — folding in a playlist `snapshot_id` (which changes on
+   * any edit) reported a cover change for every added or removed track.
+   */
+  function coverHashOf(cover) {
+    if (!cover) return "";
+    return String(cover).split("/").pop().split("?")[0];
+  }
+
+  /**
    * One item of a client playlist read, as a track row. The client already
    * carries the full metadata, so no second lookup is needed: reading it here is
    * what stops the playlist view rendering "Unknown track" with empty artist,
@@ -102,7 +116,7 @@
     // ---------------------------------------------------------- playlists
     // ------------------------- general-purpose Web API (works via Cosmos) --------------------------
     /**
-     * Web API playlist â€” the most reliable public-playlist route on current
+     * Web API playlist — the most reliable public-playlist route on current
      * builds. Melior uses the same `api.spotify.com` host through Cosmos.
      */
     apiPlaylistTracks: {
@@ -174,10 +188,29 @@
             added[uri] = { addedAt: addedAt, addedBy: String(addedBy).replace(/^spotify:user:/, "") };
           }
         }
-        // `totalLength` counts every item, episodes and unavailable tracks
-        // included, so a page shorter than the total is a partial read.
+        // `totalLength` counts every item — episodes and unavailable tracks
+        // included — while `uris` holds only `spotify:track:` entries. So
+        // `uris.length < totalLength` is true for a perfectly complete playlist
+        // that merely contains one episode, and reporting that as a short read
+        // made every scan reseed instead of diff, so such a playlist never
+        // logged a single change.
+        //
+        // The two conditions that really do mean "partial" are separated:
+        //   items.length < totalLength  — the page itself was truncated;
+        //   uris.length  < items.length — some items were not tracks (normal,
+        //     and not a reason to distrust the read).
         var total = res && res.totalLength != null ? res.totalLength : null;
-        return { uris: uris, added: added, tracks: tracks, total: total, raw: res };
+        var items = res && res.items && res.items.length != null ? res.items.length : uris.length;
+        return {
+          uris: uris,
+          added: added,
+          tracks: tracks,
+          total: total,
+          items: items,
+          // True when the page carried fewer items than the response says exist.
+          truncated: total != null ? items < total : false,
+          raw: res,
+        };
       },
     },
     clientMeta: {
@@ -185,7 +218,7 @@
         var A = clientPlaylistApi();
         return A ? { client: "playlistapi", kind: "metadata", api: A, id: id } : null;
       },
-      /** @returns {{name, description, owner, followers, coverUrl, coverHash, total}} */
+      /** @returns {{name, description, owner, followers, likes, coverUrl, coverHash, total}} */
       parse: function (res) {
         var r = res || {};
         var images = r.images || [];
@@ -197,9 +230,16 @@
           name: r.name || "",
           description: r.description || "",
           owner: (r.owner && (r.owner.username || r.owner.uri)) || "",
-          followers: r.totalLikes != null ? r.totalLikes : null,
+          // `followers` only when the payload names one. `totalLikes` is a LIKE
+          // counter and is reported separately below, because this is the first
+          // source in the chain and its value wins over every later one — mapping
+          // a like count straight onto `followers` showed it under the
+          // "followers" label. Whether the two are the same number on a given
+          // build is not knowable from here, so the caller decides.
+          followers: r.followers != null ? r.followers : null,
+          likes: r.totalLikes != null ? r.totalLikes : null,
           coverUrl: cover,
-          coverHash: cover ? String(cover).split("/").pop().split("?")[0] : "",
+          coverHash: coverHashOf(cover),
           total: r.totalLength != null ? r.totalLength : null,
           raw: r,
         };
@@ -246,10 +286,15 @@
         return {
           name: r.name || "",
           description: r.description || "",
-          owner: (r.owner && (r.owner.username || r.owner.id || r.owner.uri)) || r.ownerId || "",
+          // Stripped here rather than at the one call site that noticed: a
+          // `spotify:user:` prefix in `ownerId` is compared against bare ids
+          // later (the profile view keys watch rows by bare id), and a stored
+          // value that only works because a consumer happens to strip it is a
+          // value waiting to be mis-compared.
+          owner: String((r.owner && (r.owner.username || r.owner.id || r.owner.uri)) || r.ownerId || "").replace(/^spotify:user:/, ""),
           followers: r.followers != null ? r.followers : null,
           coverUrl: cover,
-          coverHash: cover ? String(cover).split("/").pop().split("?")[0] : "",
+          coverHash: coverHashOf(cover),
           raw: r,
         };
       },
@@ -266,8 +311,13 @@
           owner: (r.owner && (r.owner.id || r.owner.uri)) || "",
           followers: r.followers && r.followers.total != null ? r.followers.total : null,
           coverUrl: bestCover(r.images),
-          coverHash:
-            ((r.images && r.images[0] && String(r.images[0].url).split("/").pop().split("?")[0]) || "") + "|" + (r.snapshot_id || ""),
+          // Hash the artwork, and nothing else. `snapshot_id` used to be folded
+          // in, but it changes on ANY playlist edit — so every added or removed
+          // track also changed the cover hash, and `evaluate`'s scalar diff
+          // logged "cover changed" beside it. It also hashed `images[0]` while
+          // `coverUrl` used bestCover, so the hash and the displayed image could
+          // disagree; both now derive from the same chosen cover.
+          coverHash: coverHashOf(bestCover(r.images)),
           raw: r,
         };
       },
@@ -292,7 +342,12 @@
           ? data.props.pageProps.state.data.entity
           : null;
         if (!entity) return null;
-        var list = entity.trackList || entity.trackListFull || [];
+        // `trackListFull` first: `trackList` is the short preview the embed page
+        // renders, and preferring it meant a playlist with both lost every track
+        // past the preview without the read ever being marked incomplete.
+        var full = entity.trackListFull;
+        var hasFull = Array.isArray(full) && full.length > 0;
+        var list = (hasFull ? full : entity.trackList) || [];
         var uris = [];
         var added = {};
         for (var i = 0; i < list.length; i++) {
@@ -302,14 +357,24 @@
           uris.push(uri);
           added[uri] = { addedAt: null, addedBy: "" };
         }
+        // The page's own declared total is a stronger signal than the field name:
+        // a list that matches it is complete however it was spelled, and a list
+        // shorter than it is partial however confidently it was labelled. Both
+        // tests are applied, so this decides `capped` from the payload rather
+        // than from an assumption about which key a given build uses.
+        var declared = entity.total != null ? entity.total : entity.trackCount != null ? entity.trackCount : null;
+        var matchesDeclared = declared == null || declared === uris.length;
         return {
           name: entity.name || entity.title || "",
           owner: (entity.subtitle || "").replace(/^By\s+/i, ""),
           coverUrl: bestCover(entity.coverArt && entity.coverArt.sources),
           uris: uris,
           added: added,
-          total: list.length,
-          capped: true,
+          total: declared != null ? declared : list.length,
+          // Removals need a read that can prove absence: a full list, or one
+          // whose length matches the page's own declared total. A preview-only
+          // read proves nothing, so it stays capped and reports no removals.
+          capped: !(hasFull && matchesDeclared),
         };
       },
     },
@@ -386,7 +451,11 @@
           var addedBy = addedByData.username || addedByData.uri || "";
           added[uri] = { addedAt: addedAt, addedBy: String(addedBy).replace(/^spotify:user:/, "") };
         }
-        return { uris: uris, added: added, total: p.content.totalCount };
+        // `items` is the count the caller must advance its offset by: it is how
+        // many entries this page consumed, episodes and unavailable items
+        // included. `uris.length` is tracks only, and advancing by that would
+        // re-read the tail of every page.
+        return { uris: uris, added: added, items: items.length, total: p.content.totalCount };
       },
     },
   };
@@ -523,7 +592,13 @@
         avatar: user.image && (user.image.url || user.image) ? user.image.url || user.image : "",
         trackUri: String(track.uri),
         timestamp: t,
-        isPlaying: true,
+        // Only assert "playing" when the payload says so. The legacy buddylist
+        // carries no play/pause flag, and this used to hardcode `true`, which
+        // made `session.apply` treat every record as a resume: a pause was never
+        // observed, so `resumed` never fired and a pause/resume cycle was never
+        // recorded. `undefined` means "unknown", and session's `!!` keeps the
+        // last known state instead of inventing one.
+        isPlaying: f.isPlaying != null ? !!f.isPlaying : f.playing != null ? !!f.playing : undefined,
         contextUri: normalizeContext((track.artist && track.artist.uri) || ""),
       });
     }

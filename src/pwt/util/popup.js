@@ -115,11 +115,16 @@
         if (ev.key === "Escape") {
           ev.stopPropagation();
           finish(null);
-        } else if (ev.key === "Enter" && ev.target && fieldEls && ev.target.dataset && ev.target.dataset.pwtEnter !== "multiline") {
+        } else if (ev.key === "Enter" && !(ev.target && ev.target.tagName === "TEXTAREA") && !(ev.shiftKey)) {
+          // A textarea takes Enter as a newline. This tested
+          // `ev.target.dataset.pwtEnter !== "multiline"`, but nothing ever wrote
+          // that attribute — the field builder records `multiline` as a property
+          // only — so the guard was always true and Enter in a multiline field
+          // submitted the form instead of adding a line.
           var primary = actions.filter(function (a) {
             return a.primary;
           })[0];
-          if (primary && !ev.shiftKey) {
+          if (primary) {
             ev.preventDefault();
             finish(primary.value);
           }

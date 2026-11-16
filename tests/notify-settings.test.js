@@ -126,15 +126,46 @@ test("notifyOs:false keeps the OS channel quiet while unfocused", () => {
   }
 });
 
-test("notifyToast:false means no in-app toast either", () => {
-  // Focused, so the toast is the channel.
+test("notifyToast:false silences the in-app toast while FOCUSED", () => {
+  // Focused, the toast is the only channel available (the OS one is for when
+  // Spotify is in the background). The toggle has to gate it here too: it used
+  // to be applied only when `!focused()`, so switching toasts off changed
+  // nothing at all for someone actually looking at the client.
   const n = loadNotify({ notifyOs: true, notifyToast: false });
   try {
-    n.restore(); // restore the document stub first so focused() is true
     globalThis.document = { hasFocus: function () { return true; } };
     const r = n.api.emit("Spotispy scan", "hello");
     assert.equal(n.toasts.length, 0, "the toast toggle gates the in-app channel");
     assert.equal(r, false, "and emit says nothing was sent");
+  } finally {
+    n.restore();
+  }
+});
+
+test("notifyToast:false still allows the OS channel while unfocused", () => {
+  // The OS channel is the one that works in the background, so "no toasts" must
+  // not mean "no notifications at all" — that would silently drop every alert
+  // for anyone who has Spotify minimised.
+  const n = loadNotify({ notifyOs: true, notifyToast: false });
+  try {
+    globalThis.document = { hasFocus: function () { return false; } };
+    const r = n.api.emit("Spotispy scan", "hello");
+    assert.equal(n.os.length, 1, "the OS channel still carried it");
+    assert.equal(n.toasts.length, 0, "and no in-app toast was raised");
+    assert.equal(r, true, "emit reports a send");
+  } finally {
+    n.restore();
+  }
+});
+
+test("notifyToast:true still toasts while focused", () => {
+  // The default path, pinned so the fix above cannot over-gate it.
+  const n = loadNotify({ notifyOs: true, notifyToast: true });
+  try {
+    globalThis.document = { hasFocus: function () { return true; } };
+    const r = n.api.emit("Spotispy scan", "hello");
+    assert.equal(n.toasts.length, 1, "a focused user gets the in-app toast");
+    assert.equal(r, true, "and emit reports a send");
   } finally {
     n.restore();
   }

@@ -385,6 +385,20 @@
     return count;
   }
 
+  /**
+   * Erase every user-data store.
+   *
+   * `meta` is deliberately kept: it holds the settings mirror, the scan clock
+   * and the generation counters, none of which describe the user's data and all
+   * of which the app needs to boot. But three families of rows ARE user data
+   * wearing a `meta` key — resolved artwork (one row per track, playlist and
+   * profile ever seen), remembered friend names, and the per-playlist "seen
+   * track" sets. They have no eviction of their own, so a purge that left them
+   * would both break the promise on the button and grow without bound. Drop
+   * exactly those, keep the rest.
+   */
+  var PURGE_META_PREFIXES = ["art:", "activityName:", "seenTracks:"];
+
   function purgeAll() {
     return open().then(function () {
       var ops = Object.keys(SCHEMA)
@@ -394,7 +408,18 @@
         .map(function (s) {
           return [s, "clear"];
         });
-      return batch(ops);
+      return getAll("meta").then(function (rows) {
+          for (var i = 0; i < (rows || []).length; i++) {
+            var key = String(rows[i].key || "");
+            for (var p = 0; p < PURGE_META_PREFIXES.length; p++) {
+              if (key.indexOf(PURGE_META_PREFIXES[p]) === 0) {
+                ops.push(["meta", "del", key]);
+                break;
+              }
+            }
+          }
+          return batch(ops);
+        });
     });
   }
 

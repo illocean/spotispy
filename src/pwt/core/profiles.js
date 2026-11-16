@@ -6,7 +6,7 @@
  * the profile's playlist id set (rename vs departure resolved by id), and
  * records per-playlist metadata changes even for playlists never watched
  * directly — a profile rename is visible without following the playlist.
- * Follower/following *lists* sit behind a capability probe and report
+ * Follower *lists* sit behind a capability probe and report
  * ok / degraded / unavailable instead of a silent zero.
  */
 (function (root, factory) {
@@ -173,6 +173,13 @@
     var diff = pwt.diff;
     var events = [];
     var id = next.id || (prev && prev.id);
+    // Heal a nameless payload to the stored name BEFORE diffing. `displayNameOf`
+    // returns "" when no candidate resolves, and `diffScalars` ignores null but
+    // not "", so an unhealed "" logged "name: Bob → " — a rename to nothing that
+    // never happened (the caller's row merge keeps the old name). Because
+    // `rowKey` includes the day, it re-fired once per scan, forever. Doing it
+    // here rather than in the caller keeps every caller safe.
+    if (prev && prev.name && !next.name) next = Object.assign({}, next, { name: prev.name });
     var fields = diff.diffScalars(prev || {}, next, ["name", "avatarHash", "followers"], { ignoreNull: ["followers", "name"] });
     for (var i = 0; i < fields.length; i++) {
       var f = fields[i];
@@ -271,17 +278,38 @@
   }
 
   /**
-   * Capability-gated follower/following lists. Returns
+   * Capability-gated follower list. Returns
    * { state: 'ok'|'degraded'|'unavailable', ids: string[], error? }.
+   *
+   * Only followers: `sources.ENDPOINTS.following` exists and is deliberately
+   * unused, because nothing consumes a following list — the event catalogue has
+   * no `following` kinds and no view renders one. The signature used to take a
+   * `which` argument and branch on "following", which advertised a capability
+   * the app does not have; the Settings toggle below says "followers" only.
    */
-  async function fetchFollowersNet(deps, userId, which) {
+  async function fetchFollowersNet(deps, userId) {
     var pwt = P();
     var net = deps.net || pwt.net;
-    var spec = which === "following" ? pwt.sources.ENDPOINTS.following(userId) : pwt.sources.ENDPOINTS.followers(userId);
+    var spec = pwt.sources.ENDPOINTS.followers(userId);
     try {
       var res = await net.call(spec);
+      // An error body is not a list. Without this, a rate-limited-but-200 answer
+      // reads as "no followers" and every known follower is reported as gone.
+      var be = net.bodyError ? net.bodyError(res) : null;
+      if (be) {
+        var err = new Error(net.bodyErrorMessage ? net.bodyErrorMessage("followers", be) : "request failed");
+        err.code = net.bodyErrorCode ? net.bodyErrorCode(be, "network") : "network";
+        throw err;
+      }
       var list = (res && (res.profiles || res.users || res.followers || res.following)) || null;
       if (!Array.isArray(list)) return { state: "degraded", ids: [], error: "unexpected payload shape" };
+      // An empty list that contradicts a declared total is a truncated or
+      // partial read, not a mass departure. Reporting it as `ok` would emit one
+      // "a follower left" row per known follower.
+      var declared = res && (res.total != null ? res.total : res.count != null ? res.count : null);
+      if (!list.length && declared != null && declared > 0) {
+        return { state: "degraded", ids: [], error: "the list came back empty but the endpoint reports " + declared + " follower(s)" };
+      }
       var ids = [];
       for (var i = 0; i < list.length; i++) {
         var it = list[i];
@@ -381,9 +409,9 @@
       var puts = [["profiles", row]];
       var changes = evaluated.events.slice();
 
-      // Capability-gated follower / following logs (only when enabled).
+      // Capability-gated follower logs (only when enabled).
       if (settings.followers !== false) {
-        var followers = await fetchFollowersNet(deps, w.id, "followers");
+        var followers = await fetchFollowersNet(deps, w.id);
         if (followers.state === "ok") {
           var base = await db.get("profileSets", "followers:" + w.id);
           if (base) {

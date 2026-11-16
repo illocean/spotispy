@@ -49,6 +49,10 @@
    */
   var boundaryClass = null;
   function errorBoundary() {
+    // Never cache a miss: `Spicetify` is installed by the host after this
+    // module loads, so React may legitimately be absent on the first call and
+    // present on the next. Caching null would leave the app unprotected for
+    // the whole session with nothing to show it.
     if (boundaryClass) return boundaryClass;
     var R = root.Spicetify && root.Spicetify.React;
     if (!R || !R.Component) return null;
@@ -306,5 +310,9 @@
     );
   }
 
+  App.errorBoundary = errorBoundary;
+  App.errorBoundary.reset = function () {
+    boundaryClass = null;
+  };
   return App;
 });

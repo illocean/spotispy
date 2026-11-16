@@ -319,12 +319,20 @@
         "data",
         "Data",
         "local only",
+        // A count that could not be read is not zero. Saying "0 change rows"
+        // for a database that failed to open is a lie about the user's data.
+        m.counts && m.counts.error
+          ? h("p", { class: "pwt-error" }, "Could not read the local database: " + m.counts.error)
+          : h(
+              "div",
+              { class: "pwt-kpis pwt-kpis-tight" },
+              h(kit.Stat, { value: (m.counts && m.counts.changes) || 0, label: "change rows" }),
+              h(kit.Stat, { value: (m.counts && m.counts.plays) || 0, label: "play rows" })
+            ),
         h(
           "div",
           { class: "pwt-kpis pwt-kpis-tight" },
           h(kit.Stat, { value: m.cacheLabel, label: "cache size" }),
-          h(kit.Stat, { value: (m.counts && m.counts.changes) || 0, label: "change rows" }),
-          h(kit.Stat, { value: (m.counts && m.counts.plays) || 0, label: "play rows" }),
           h(kit.Stat, { value: m.retainDays, label: "activity retention (days, enforced on scan)" })
         ),
         h(
@@ -409,12 +417,17 @@
                   "tbody",
                   null,
                   (diag.result.checks || []).map(function (c, i) {
+                    // A skipped check did not fail: it never ran, because there
+                    // was nothing to probe. It must not read as a red row.
+                    var skipped = c.state === "skipped";
+                    var label = skipped ? "skipped" : c.ok ? "ok" : "fail";
+                    var tone = skipped ? "neutral" : c.ok ? "success" : "error";
                     return h(
                       "tr",
-                      { key: "d" + i, class: c.ok ? "pwt-row" : "pwt-row pwt-row-fail" },
+                      { key: "d" + i, class: c.ok ? "pwt-row" : skipped ? "pwt-row" : "pwt-row pwt-row-fail" },
                       h("td", null, c.name),
                       h("td", { class: "pwt-when" }, c.ms),
-                      h("td", null, h(kit.Badge, { tone: c.ok ? "success" : "error" }, c.ok ? "ok" : "fail")),
+                      h("td", null, h(kit.Badge, { tone: tone }, label)),
                       h("td", { class: "pwt-log-detail" }, c.detail || "")
                     );
                   })

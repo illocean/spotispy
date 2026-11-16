@@ -1,6 +1,6 @@
 /* eslint-disable */
 /**
- * Spotispy ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â app controller.
+ * Spotispy — app controller.
  *
  * Loads everything a view needs from IndexedDB into one model, keeps it fresh on
  * scheduler progress and on a light page-visibility poll, and exposes the
@@ -65,11 +65,16 @@
     var diagState = useState({ running: false, result: null });
     var diag = diagState[0];
     var setDiag = diagState[1];
+    // Monotonic id for in-flight loads. A route switch drops the old payload
+    // precisely so the new route cannot render the previous one's data, but a
+    // load that is still running would write its (now stale) result afterwards.
+    // Only the newest load may publish.
+    var loadSeqRef = useRef(0);
 
     /**
      * Switch routes and drop the previous route's payload. Without the reset,
      * the new route can briefly render with the OLD route's `model`/`vm`
-     * (different shapes) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â which is how the Activity view used to throw and
+     * (different shapes) — which is how the Activity view used to throw and
      * take the whole React tree down with it.
      *
      * The selection and the open playlist live in refs, not in the model, so
@@ -77,6 +82,8 @@
      * and the same playlist selected.
      */
     function goRoute(next) {
+      // Any load still in flight belongs to the route we are leaving.
+      loadSeqRef.current++;
       setModel(function (m) {
         return Object.assign({}, m, {
           model: undefined,
@@ -91,7 +98,7 @@
       setRoute(next);
       // Bump the epoch so the route effect re-runs even when the route itself
       // did not change (revisiting the current page must reload it, not leave
-      // it on "Loadingâ€¦" forever).
+      // it on "Loading…" forever).
       setRouteEpoch(function (e) {
         return e + 1;
       });
@@ -210,7 +217,7 @@
         /* telemetry is best effort */
       }
       try {
-        if (P.notify && P.notify.toast) P.notify.toast("Spotispy: " + where + " failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â " + message);
+        if (P.notify && P.notify.toast) P.notify.toast("Spotispy: " + where + " failed — " + message);
       } catch (e3) {
         /* no toast channel; the ribbon/console carries the detail */
       }
@@ -315,7 +322,63 @@
     }
 
     /** Load everything the current route needs. */
+    /**
+     * Run the in-app self-test. Defined outside the per-route blocks on
+     * purpose: the App shell offers "retry" on the self-test ribbon, and that
+     * ribbon can appear on any route (the test auto-runs on mount). When this
+     * lived inside the Settings block, retry was a dead button everywhere else.
+     */
+    function runSelfTest() {
+      setDiag({ running: true, result: diag.result });
+      Promise.resolve()
+        .then(function () {
+          return pwt.telemetry ? pwt.telemetry.runSelfTest({ db: pwt.db, store: pwt.store, bus: pwt.bus }) : null;
+        })
+        .then(function (res) {
+          setDiag({ running: false, result: res });
+        })
+        .catch(function (e) {
+          setDiag({
+            running: false,
+            result: {
+              at: Date.now(),
+              pass: 0,
+              fail: 1,
+              total: 1,
+              totalMs: 0,
+              checks: [{ name: "self-test crashed", ok: false, ms: 0, detail: String((e && e.message) || e) }],
+            },
+          });
+        });
+    }
+
+    function copyDiagnostics() {
+      var pwt = P;
+      var report = pwt.telemetry ? pwt.telemetry.report() : { note: "telemetry missing" };
+      var text = JSON.stringify(report, null, 2);
+      var said = false;
+      var done = function () {
+        if (said) return;
+        said = true;
+        if (pwt.notify && pwt.notify.toast) pwt.notify.toast("Diagnostics copied to clipboard");
+      };
+      try {
+        if (root.navigator && root.navigator.clipboard && root.navigator.clipboard.writeText) {
+          root.navigator.clipboard.writeText(text).then(done, done);
+        } else {
+          root.console.log("[Spotispy] diagnostics report\n" + text);
+          done();
+        }
+      } catch (e) {
+        root.console.log("[Spotispy] diagnostics report\n" + text);
+        done();
+      }
+    }
+
     async function load(routeName, extra) {
+      // Claim this load's place in line. Anything still running under an older
+      // token is stale and must not publish (see the guard before setModel).
+      var seq = ++loadSeqRef.current;
       var pwt = P;
       var db = pwt.db;
       var store = pwt.store;
@@ -548,7 +611,10 @@
             if ((!row || !row.coverUrl) && id) {
               var artMapPL = await artFallback(["spotify:playlist:" + id]);
               var artUrlPL = artMapPL["spotify:playlist:" + id];
-              if (artUrlPL) row = Object.assign({}, row || { id: id, name: "Untitled playlist" }, { coverUrl: artUrlPL });
+              // Only a row that EXISTS gets its cover filled in. Inventing a row
+              // here just to hang a cover on it is what produced a phantom
+              // "Untitled playlist" detail page for a playlist nobody watches.
+              if (artUrlPL && row) row = Object.assign({}, row, { coverUrl: artUrlPL });
             }
           var snap = await db.get("snapshots", id);
           // The rows for the log want the same display-name treatment.
@@ -587,7 +653,11 @@
             // Also try the art cache for a row whose stored cover is a
             // spotify:image:/spotify:mosaic: ref that imageUrl() can already read.
             if (row && row.coverUrl && u.imageUrl) row = Object.assign({}, row, { coverUrl: u.imageUrl(row.coverUrl) || row.coverUrl });
-            out.model = vm.playlistDetail(row || { id: id, name: "Untitled playlist" }, snap, tracks, changes2, logDisplayOf);
+            // No stored row means there is nothing to show. Building a detail
+            // page for a playlist nobody watches is what rendered the phantom
+            // "Untitled playlist" screen over an empty table; the view has an
+            // honest "Playlist not watched" state for exactly this case.
+            out.model = row ? vm.playlistDetail(row, snap, tracks, changes2, logDisplayOf) : null;
           } else {
             out.model = null;
           }
@@ -816,54 +886,16 @@
           });
           out.addState = { playlist: add.playlist, profile: add.profile, error: "" };
           out.addError = add.error;
-          out.onRunSelfTest = function () {
-            setDiag({ running: true, result: diag.result });
-            Promise.resolve()
-              .then(function () {
-                return pwt.telemetry ? pwt.telemetry.runSelfTest({ db: pwt.db, store: pwt.store, bus: pwt.bus }) : null;
-              })
-              .then(function (res) {
-                setDiag({ running: false, result: res });
-              })
-              .catch(function (e) {
-                setDiag({
-                  running: false,
-                  result: {
-                    at: Date.now(),
-                    pass: 0,
-                    fail: 1,
-                    total: 1,
-                    totalMs: 0,
-                    checks: [{ name: "self-test crashed", ok: false, ms: 0, detail: String((e && e.message) || e) }],
-                  },
-                });
-              });
-          };
-          out.onCopyDiagnostics = function () {
-            var report = pwt.telemetry ? pwt.telemetry.report() : { note: "telemetry missing" };
-            var text = JSON.stringify(report, null, 2);
-            var said = false;
-            var done = function () {
-              if (said) return;
-              said = true;
-              if (pwt.notify && pwt.notify.toast) pwt.notify.toast("Diagnostics copied to clipboard");
-            };
-            try {
-              if (root.navigator && root.navigator.clipboard && root.navigator.clipboard.writeText) {
-                root.navigator.clipboard.writeText(text).then(done, done);
-              } else {
-                root.console.log("[Spotispy] diagnostics report\n" + text);
-                done();
-              }
-            } catch (e) {
-              root.console.log("[Spotispy] diagnostics report\n" + text);
-              done();
-            }
-          };
+          out.onRunSelfTest = runSelfTest;
+          out.onCopyDiagnostics = copyDiagnostics;
         }
         if (pwt.telemetry) pwt.telemetry.record("load." + routeName, Date.now() - __tLoad, true);
         out.error = null;
         out.loading = false;
+        // A newer load has already started (or the route changed under us):
+        // publishing now would overwrite the current route's payload with this
+        // stale one. The newest load owns the model.
+        if (seq !== loadSeqRef.current) return;
         setModel(function (m) {
           return Object.assign({}, m, out);
         });
@@ -874,6 +906,7 @@
           pwt.telemetry.captureError("load." + routeName, e);
         }
         var loadError = String((e && e.stack) || e);
+        if (seq !== loadSeqRef.current) return;
         setModel(function (m) {
           // The stale payload goes with it: a failed load must not leave the
           // previous route's data on screen under an error banner.
@@ -926,6 +959,18 @@
 
     async function unwatch(kind, id) {
       await P.store.removeWatch(kind, id);
+      // The watch row is not the only thing that decides who is observed: the
+      // activity tick gates on the profile's own `watchActivity` flag. Leaving
+      // it set would keep recording this person's plays, sessions and presence
+      // after the user removed them — so unwatching turns the flag off too.
+      if (kind === "profile") {
+        try {
+          var row = await P.db.get("profiles", id);
+          if (row) await P.db.put("profiles", Object.assign({}, row, { watchActivity: false }));
+        } catch (e) {
+          /* the watch row is already gone; the flag is a leftover at worst */
+        }
+      }
     }
 
     async function followerHistory(userId) {
@@ -934,11 +979,17 @@
       var changes = await P.store.changesFor(userId, 400);
       return changes
         .filter(function (c) {
-          return c.kind === "profile.followers.count" && c.extra && c.extra.to != null;
+          return c.kind === "profile.followers.count";
         })
         .reverse()
+        .filter(function (c) {
+          // `Number(x) || 0` turned an unparseable reading into a real 0, which
+          // the sparkline plotted as a genuine drop to zero followers. A value
+          // that is not a number is not data.
+          return c.extra && c.extra.to != null && isFinite(Number(c.extra.to));
+        })
         .map(function (c) {
-          return { at: c.ts, value: Number(c.extra.to) || 0 };
+          return { at: c.ts, value: Number(c.extra.to) };
         });
     }
 
@@ -964,10 +1015,13 @@
     }
 
     async function counts(db) {
+      // A read failure is not an empty log. Reporting it as one let Settings
+      // print "0 changes" for a database it could not open — the exact
+      // "silent failure" this app is not allowed to have.
       try {
         return { changes: await db.count("changes"), plays: await db.count("plays"), sessions: await db.count("sessions") };
       } catch (e) {
-        return {};
+        return { error: String((e && e.message) || e) };
       }
     }
 
@@ -1024,7 +1078,7 @@
                 return Object.assign({}, m, { scan: busSnapshot(), liveNow: liveNowIds() });
               });
               // When a scan completes while the tab is open, every route
-              // re-reads its data ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â not just the scan button's own .then().
+              // re-reads its data — not just the scan button's own .then().
               var seen = lastScanSeenRef.current;
               var cur = bus && bus.lastScanAt;
               var crash = bus && bus.crashAt;
@@ -1101,6 +1155,10 @@
       onRetry: function () {
         load(routeRef.current, { selected: selectedRef.current, playlistId: playlistIdRef.current });
       },
+      // Available on every route: the self-test ribbon is rendered by the App
+      // shell, so its "retry" must work wherever the ribbon appears.
+      onRunSelfTest: guard("self-test", runSelfTest),
+      onCopyDiagnostics: guard("copy-diagnostics", copyDiagnostics),
       onSelect: guard("select", function (id) {
         selectedRef.current = id;
         return load("profiles", { selected: id });

@@ -322,6 +322,9 @@
       coverHash: row.coverHash,
       coverUrl: u.imageUrl(row.coverUrl || ""),
       followers: row.followers,
+      // A like counter is not a follower count. Carried so the view can label it
+      // "likes" rather than dropping a real number on the floor.
+      likes: row.likes,
       watchedAt: row.watchedAt,
       lastSyncedAt: row.lastSyncedAt,
       lastChangeAt: row.lastChangeAt,
@@ -535,7 +538,7 @@
         { key: "notifyProfile", label: "Notify on profile edits", value: !!settings.notifyProfile },
         { key: "notifyPresence", label: "Notify when a friend goes online/offline", value: !!settings.notifyPresence },
         { key: "activityBoost", label: "Faster activity polls while a friend is playing", value: !!settings.activityBoost },
-        { key: "followers", label: "Track follower / following lists (when the client allows it)", value: settings.followers !== false },
+        { key: "followers", label: "Track followers (when the client allows it)", value: settings.followers !== false },
       ],
       retainDays: settings.retainDays,
       logCap: settings.logCap,

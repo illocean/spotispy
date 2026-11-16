@@ -1,12 +1,12 @@
 /* eslint-disable */
 /**
- * Spotispy â€” playlist scan stage.
+ * Spotispy — playlist scan stage.
  *
  * For each watched playlist: fetch contents through the source chain
  * (client playlist API -> Web API via Cosmos -> embed JSON -> web-player
  * GraphQL -> last-ditch core rows),
  * decide with the pure differ whether anything is loggable, and return one atomic
- * commit plan. A failed fetch writes nothing (proposal Â§4.2).
+ * commit plan. A failed fetch writes nothing (proposal §4.2).
  */
 (function (root, factory) {
   var api = factory(root);
@@ -69,12 +69,15 @@
         if (name === "client") {
           var cliRes = await net.call(sources.SOURCES.clientContents.fn(id));
           var cliParsed = sources.SOURCES.clientContents.parse(cliRes);
-          // A short read is a partial read: `totalLength` counts every item, so
-          // reporting it as complete would let a second scan diff a truncated
-          // snapshot into a mass removal.
+          // A short read is a partial read, and "short" means the page carried
+          // fewer items than the response says exist (`truncated`). What must
+          // NOT count is `uris.length` against `totalLength`: `totalLength`
+          // includes episodes, so a complete playlist of 10 tracks plus one
+          // episode was marked capped forever — and a capped read reseeds instead
+          // of diffing, so that playlist never reported a single change.
           if (!cliParsed.uris.length) throw new Error("client playlist route returned no track URIs");
           var cliTotal = cliParsed.total == null ? cliParsed.uris.length : cliParsed.total;
-          var cliCapped = cliParsed.uris.length < cliTotal;
+          var cliCapped = !!cliParsed.truncated;
           attempts.push({ source: "client", ok: true, capped: cliCapped });
           // The same read carries each track's title, artists, album and cover;
           // hand them to the caller so the cache is filled without a second pass
@@ -99,7 +102,7 @@
             var apiSpec = sources.SOURCES.apiPlaylistTracks.fn(id, { offset: offset });
             var apiRes = await net.call(apiSpec);
             // The client answers an unreachable or rate-limited Web API with a
-            // resolved {code,message} body instead of throwing â€” detect it here
+            // resolved {code,message} body instead of throwing — detect it here
             // or the source silently "succeeds" with zero tracks.
             var apiBodyError = bodyError(apiRes);
             if (apiBodyError) {
@@ -191,11 +194,28 @@
             if (!parsedPage || !parsedPage.uris.length) throw new Error("pathfinder page empty at offset " + offset);
             uris = uris.concat(parsedPage.uris);
             Object.assign(added, parsedPage.added);
-            offset += parsedPage.uris.length;
+            // Advance by ITEMS, not tracks: `offset` indexes `content.items`, so
+            // advancing by `uris.length` re-read the tail of every page that
+            // contained an episode, duplicating URIs and — once the page count
+            // ran out — truncating the list while still claiming completeness.
+            offset += parsedPage.items || parsedPage.uris.length;
             pages++;
           }
           attempts.push({ source: "pathfinder", ok: true });
-          return { uris: uris, added: added, total: total, source: "pathfinder", capped: false, meta: info };
+          // The `pages < 200` guard is a hard stop, not a full read: a 10,000-item
+          // playlist needs 100 pages even with no episodes, and one with episodes
+          // needs more, so hitting the cap leaves a truncated list. Claiming
+          // `capped: false` then lets the next scan diff that short list and
+          // report every unread track as removed. Say so instead.
+          var hitPageCap = offset < total;
+          return {
+            uris: uris,
+            added: added,
+            total: total,
+            source: "pathfinder",
+            capped: hitPageCap,
+            meta: info,
+          };
         }
         if (name === "embed") {
           var embedSpec = sources.SOURCES.embed.fn(id);
@@ -203,7 +223,13 @@
           var entity = sources.SOURCES.embed.parse(html);
           if (!entity || !entity.uris.length) throw new Error("embed JSON missing or empty");
           attempts.push({ source: "embed", ok: true });
-          return { uris: entity.uris, added: entity.added, total: entity.total, source: "embed", capped: true, meta: entity };
+          // Take the parse result's own verdict. This used to hardcode `true`,
+          // discarding a correctly-computed `capped: false` for a read that got
+          // `trackListFull` matching the page's declared total — so on a build
+          // where the client and Web API routes both fail, every playlist was
+          // read through embed and marked capped on every scan, reseeding instead
+          // of diffing and never logging a single track change.
+          return { uris: entity.uris, added: entity.added, total: entity.total, source: "embed", capped: entity.capped, meta: entity };
         }
       } catch (e) {
         attempts.push({ source: name, ok: false, error: e && e.message });
@@ -269,6 +295,25 @@
         /* fall through */
       }
     }
+    // 2b) The client route answers even when the HTTP chain does not, and its
+    //     payload carries a LIKE counter rather than a followers field. So the
+    //     follower count can still be missing after step 1 succeeded on name and
+    //     cover — which is exactly the case step 2 above skips. Ask specifically
+    //     for the count rather than letting it stay absent, and only accept a
+    //     value from a source that names followers. `likes` is a last resort and
+    //     is labelled as such by the caller, never silently passed off as
+    //     followers.
+    if (out.followers == null) {
+      try {
+        var api2 = await pwt.net.call(pwt.sources.SOURCES.apiPlaylist.fn(id));
+        if (!bodyError(api2)) {
+          var parsedApi2 = pwt.sources.SOURCES.apiPlaylist.parse(api2);
+          if (parsedApi2 && parsedApi2.followers != null && parsedApi2.followers !== "") out.followers = parsedApi2.followers;
+        }
+      } catch (eApi2) {
+        /* the count stays unknown; the UI shows "—" rather than a guess */
+      }
+    }
     // 3) wg core-playlist metadata, if the resolver exists.
     if (!out.name) {
       try {
@@ -325,7 +370,10 @@
             if (found) {
               if (!out.name && found.name) out.name = found.name;
               if (!out.coverUrl && found.cover) out.coverUrl = found.cover;
-              if (out.followers == null && found.total != null) out.followers = found.total;
+              // NOT `found.total`: that is the playlist's track count (see
+              // profiles.js parseProfile), so storing it as `followers` put a
+              // track count under the "followers" label and, because it filled
+              // the slot first, also suppressed the real like counter below.
               if (!out.owner) out.owner = ownerIds[oi];
             }
           } catch (eP) {
@@ -335,6 +383,13 @@
       } catch (e3) {
         /* the profile route is another fallback, not a requirement */
       }
+    }
+    // Decided last, against every source: a like counter is only reported as
+    // such when no source supplied a real follower count. Earlier placements ran
+    // before the profile fallback could fill `followers`, so a valid count found
+    // there still left this flag set and the view hid the likes alongside it.
+    if (out.followers == null && out.likes != null && out.likes !== "") {
+      out.likesOnly = out.likes;
     }
     return out;
   }
@@ -367,7 +422,19 @@
     };
     if (plan.action === "hold") {
       snapshotRow.pendingShrink = { count: fresh.uris.length, confirmations: plan.confirmations };
+      // Keep the PRE-shrink list: the confirmation scan has to compare against it
+      // for `isSuspiciousShrink` to fire again, which is what proves the removals.
       snapshotRow.uris = (snapshot && snapshot.uris) || fresh.uris.slice();
+      // But the additions reported by this hold must not be reported again when
+      // the shrink is confirmed. Record them so the next scan can skip them.
+      snapshotRow.reportedAdds = (snapshot && snapshot.reportedAdds ? snapshot.reportedAdds.slice() : []);
+      for (var ra = 0; ra < plan.added.length; ra++) {
+        if (snapshotRow.reportedAdds.indexOf(plan.added[ra]) < 0) snapshotRow.reportedAdds.push(plan.added[ra]);
+      }
+    } else {
+      // Any scan that is not a hold closes the window: from here the snapshot
+      // reflects what was actually reported.
+      snapshotRow.reportedAdds = [];
     }
 
     // Additions are emitted for a diff OR a hold. A hold means "the shrink is
@@ -375,8 +442,14 @@
     // which the same read already proved. Dropping them meant a genuine new
     // track was invisible for a cycle.
     if (plan.action === "diff" || plan.action === "hold") {
+      var already = (snapshot && snapshot.reportedAdds) || [];
       for (var a = 0; a < plan.added.length; a++) {
         var uri = plan.added[a];
+        // Skip additions this snapshot already reported during an unconfirmed
+        // shrink. The confirmation scan diffs against the same pre-shrink list,
+        // so it would otherwise emit them a second time — on a later day, where
+        // `rowKey` cannot dedupe and the aggregate counts the track twice.
+        if (already.indexOf(uri) >= 0) continue;
         var add = fresh.added && fresh.added[uri] ? fresh.added[uri] : null;
         var addedRow = trackRows && trackRows[uri] ? trackRows[uri] : null;
         events.push(
@@ -426,7 +499,7 @@
             target: id,
             kind: c.field === "coverHash" ? "profile.playlist.cover.changed" : c.field === "name" ? "profile.playlist.renamed" : "playlist.meta.changed",
             title: title,
-            detail: c.field + ": " + (c.from == null ? "â€”" : c.from) + " â†’ " + (c.to == null ? "â€”" : c.to),
+            detail: c.field + ": " + (c.from == null ? "—" : c.from) + " → " + (c.to == null ? "—" : c.to),
             extra: { field: c.field, from: c.from, to: c.to },
           },
           now
@@ -450,6 +523,10 @@
       if (meta.coverHash) playlistRow.coverHash = meta.coverHash;
       if (meta.description != null) playlistRow.description = meta.description;
       if (meta.followers != null) playlistRow.followers = meta.followers;
+      // Keep the like counter under its own name. It is NOT a follower count, so
+      // storing it as one would show a wrong number; storing it separately lets
+      // the detail view say "likes" when that is all this client exposes.
+      if (meta.followers == null && meta.likesOnly != null) playlistRow.likes = meta.likesOnly;
       if (meta.owner) playlistRow.ownerId = meta.owner;
     }
 
@@ -643,10 +720,10 @@
       function (d, t, item, result) {
         done++;
         // A playlists scan result is one of:
-        //   { ok: true,  value: evaluatedRecord }      â€“ success
-        //   { ok: true,  value: { skipped: true } }    â€“ backed off, not a failure
-        //   { ok: true,  value: { error: "â€¦" } }       â€“ fetch/commit failed
-        //   { ok: false, error: e }                    â€“ task threw unexpectedly
+        //   { ok: true,  value: evaluatedRecord }      – success
+        //   { ok: true,  value: { skipped: true } }    – backed off, not a failure
+        //   { ok: true,  value: { error: "…" } }       – fetch/commit failed
+        //   { ok: false, error: e }                    – task threw unexpectedly
         // Everything counts as failed except a clean evaluation or an explicit skip.
         var value = result && result.ok === false ? null : result && result.value;
         var looksFailed = !value || (!value.skipped && (value.error || result.ok === false));

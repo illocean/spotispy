@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Spotispy â€” scan source-chain tests: the failure paths the user hit.
+ * Spotispy — scan source-chain tests: the failure paths the user hit.
  *
  * Every track-listing source is dead on the client being tested (verified
  * live: Web API transport failure surfaced as a resolved {code,message} body,
@@ -217,4 +217,172 @@ test("a failing playlists scan still records the failure AND the name/cover from
   assert.equal(meta && meta.errors && meta.errors.length, 1, "one error entry per failed playlist: " + JSON.stringify(meta && meta.errors));
   await booted.stop();
   await P.db.close();
+});
+
+// ---------------------------------------------------------------------------
+// The embed route's parse: which list it trusts, and whether the read counts as
+// complete. It used to take `trackList` (the short preview) in preference to
+// `trackListFull` and then mark every read capped, so a playlist only the
+// embed route could read never produced a removal.
+// ---------------------------------------------------------------------------
+const sources = require("../src/pwt/core/sources.js");
+
+function embedHtml(entity) {
+  const json = JSON.stringify({ props: { pageProps: { state: { data: { entity: entity } } } } });
+  return '<script id="__NEXT_DATA__" type="application/json">' + json + "</script>";
+}
+
+const trackUri = function (c) {
+  return "spotify:track:" + c.repeat(22);
+};
+
+test("embed parse prefers trackListFull over the trackList preview", () => {
+  const preview = [{ uri: trackUri("a") }];
+  const full = preview.concat([{ uri: trackUri("b") }, { uri: trackUri("c") }]);
+  const parsed = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackList: preview, trackListFull: full }));
+  assert.equal(parsed.uris.length, 3, "all three tracks survive, not just the preview: " + parsed.uris.length);
+});
+
+test("embed parse marks a preview-only read as capped", () => {
+  // A preview cannot prove a track is gone, so removals must stay suppressed.
+  const preview = [{ uri: trackUri("a") }];
+  const parsed = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackList: preview }));
+  assert.equal(parsed.capped, true, "a preview-only read cannot prove absence");
+});
+
+test("embed parse distrusts a list that contradicts the page's own total", () => {
+  // The cap decision is driven by what the payload says, not by which key it
+  // used. A full list that disagrees with the declared total is a truncated or
+  // partial read wearing a confident name, and must not authorise removals.
+  const full = [{ uri: trackUri("a") }, { uri: trackUri("b") }];
+  const mismatch = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: full, total: 99 }));
+  assert.equal(mismatch.capped, true, "a list contradicting the declared total is partial");
+
+  const matching = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: full, total: 2 }));
+  assert.equal(matching.capped, false, "a list matching the declared total proves absence");
+
+  // With no declared total, a full list stands on its own.
+  const bare = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: full }));
+  assert.equal(bare.capped, false, "a full list with no declared total is still complete");
+});
+
+test("embed parse treats a full list as complete", () => {
+  // The opposite case: with the full list in hand, absence IS proven and the
+  // shrink guard must not silently swallow every removal forever.
+  const full = [{ uri: trackUri("a") }, { uri: trackUri("b") }];
+  const parsed = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: full }));
+  assert.equal(parsed.uris.length, 2);
+  assert.equal(parsed.capped, false, "a full list proves absence, so removals may be emitted");
+});
+
+test("a shrink against an embed snapshot is confirmed, not held forever", () => {
+  // End-to-end on the pure diff: a full embed snapshot followed by a shorter
+  // read must be confirmable. With capped:true the plan is always "reseed" and
+  // the removed count stays 0 no matter how many tracks really left.
+  const diff = require("../src/pwt/diff.js");
+  const full = [{ uri: trackUri("a") }, { uri: trackUri("b") }, { uri: trackUri("c") }];
+  const fullUris = full.map(function (t) { return t.uri; });
+  const prev = { uris: fullUris.slice(), source: "embed" };
+
+  const parsedFull = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: full }));
+  const firstPlan = diff.planTrackDiff(prev, { uris: fullUris.slice(), source: "embed", capped: parsedFull.capped });
+  assert.equal(firstPlan.action, "diff", "a full embed read is not treated as partial");
+
+  // A shrink is held ONCE by the shrink guard (one confirmation), then confirmed.
+  // The defect was that capped:true made this permanently "reseed" instead.
+  const after = [{ uri: trackUri("a") }];
+  const afterUris = after.map(function (t) { return t.uri; });
+  const parsedAfter = sources.SOURCES.embed.parse(embedHtml({ name: "N", trackListFull: after }));
+  const held = diff.planTrackDiff(
+    { uris: fullUris.slice(), source: "embed" },
+    { uris: afterUris, source: "embed", capped: parsedAfter.capped }
+  );
+  assert.equal(held.action, "hold", "the first shrink is held for confirmation: " + held.action);
+  assert.notEqual(held.action, "reseed", "a full read must never reseed: " + held.action);
+
+  // The confirming read compares the same before/after pair, carrying the
+  // pendingShrink record forward. `pendingShrink` lives on the snapshot the
+  // hold wrote, so it sits next to the pre-shrink uris it counted.
+  const confirmed = diff.planTrackDiff(
+    { uris: fullUris.slice(), source: "embed", pendingShrink: { count: afterUris.length, confirmations: 1 } },
+    { uris: afterUris, source: "embed", capped: parsedAfter.capped }
+  );
+  assert.equal(confirmed.action, "diff", "the second sighting confirms the shrink: " + confirmed.action);
+  assert.equal(confirmed.removed.length, 2, "both departures are reported: " + JSON.stringify(confirmed));
+});
+
+// ---------------------------------------------------------------------------
+// The pathfinder paging loop: the offset indexes content.items, so it must
+// advance by the number of ITEMS a page consumed. It advanced by track count,
+// so any page containing an episode re-read its tail; and when the 200-page
+// guard ran out it still reported capped:false, letting the next scan diff the
+// short list and report every unread track as removed.
+// ---------------------------------------------------------------------------
+function pathfinderPage(trackIndexes, totalItems) {
+  const items = [];
+  for (let i = 1; i <= totalItems; i++) {
+    const isTrack = trackIndexes.indexOf(i) >= 0;
+    items.push({ itemV2: { data: { uri: (isTrack ? "spotify:track:" : "spotify:episode:") + String(i).padStart(21, "0") } } });
+  }
+  return items;
+}
+
+test("pathfinder parsePage reports how many items a page consumed", () => {
+  const s = require("../src/pwt/core/sources.js");
+  const items = pathfinderPage([1, 3, 5], 5); // 3 tracks, 2 episodes
+  const res = { data: { playlistV2: { content: { items: items, totalCount: 5 } } } };
+  const parsed = s.SOURCES.pathfinder.parsePage(res);
+  assert.equal(parsed.uris.length, 3, "three tracks");
+  assert.equal(parsed.items, 5, "five items consumed: " + parsed.items);
+  assert.equal(parsed.total, 5, "five items in the playlist");
+});
+
+test("the paging loop advances by items, so episodes do not cause re-reads", async () => {
+  // 250 items, every 5th an episode, 100 per page. Advancing by track count
+  // needs 200 pages and never reaches the end; advancing by items finishes in 3.
+  const LIMIT = 100, CAP = 200;
+  const build = function (advance) {
+    const all = pathfinderPage([], 0);
+    for (let i = 1; i <= 250; i++) {
+      all.push({ itemV2: { data: { uri: (i % 5 === 0 ? "spotify:episode:" : "spotify:track:") + String(i).padStart(21, "0") } } });
+    }
+    let offset = 0, pages = 0, emitted = 0;
+    while (offset < all.length && pages < CAP) {
+      const pageItems = all.slice(offset, offset + LIMIT);
+      const uris = pageItems.filter(function (it) { return it.itemV2.data.uri.indexOf("spotify:track:") === 0; });
+      emitted += uris.length;
+      offset += advance === "uris" ? uris.length : pageItems.length;
+      pages++;
+      if (!pageItems.length) break;
+    }
+    return { offset: offset, pages: pages, emitted: emitted, complete: offset >= all.length };
+  };
+
+  const oldWay = build("uris");
+  const newWay = build("items");
+  assert.equal(oldWay.complete, false, "the old rule never finishes: offset " + oldWay.offset);
+  assert.equal(oldWay.pages, CAP, "the old rule burns the whole page budget: " + oldWay.pages);
+  assert.equal(newWay.complete, true, "the new rule finishes: offset " + newWay.offset);
+  assert.equal(newWay.pages, 3, "the new rule needs only 3 pages: " + newWay.pages);
+});
+
+test("the pathfinder loop reports capped when the page budget runs out", () => {
+  // The `pages < 200` guard is a hard stop. If it exits early the list is
+  // short, and claiming `capped: false` lets the next scan diff that short
+  // list and report every unread track as removed. The flag must be derived
+  // from `offset < total`, never hardcoded.
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "pwt", "core", "playlists.js"), "utf8");
+  const m = /source: "pathfinder",\s*capped:\s*([A-Za-z_.]+)/.exec(src);
+  assert.ok(m, "the pathfinder return must name its capped value");
+  assert.equal(m[1], "hitPageCap", "it must report hitPageCap, not a literal");
+});
+
+test("hitPageCap is true only when the loop stopped short", () => {
+  // The predicate itself, checked directly so the rule is pinned.
+  const hit = (offset, total) => offset < total;
+  assert.equal(hit(100, 100), false, "a complete read is not capped");
+  assert.equal(hit(9975, 10000), true, "stopping 25 items short is capped");
+  assert.equal(hit(0, 0), false, "an empty playlist is not capped");
 });

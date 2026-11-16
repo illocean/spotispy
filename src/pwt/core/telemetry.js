@@ -152,14 +152,19 @@
       try {
         var detail = await fn();
         var ms = Math.round((now() - t0) * 10) / 10;
-        checks.push({ name: name, ok: true, ms: ms, detail: detail == null ? "" : String(detail) });
+        checks.push({ name: name, ok: true, state: "ok", ms: ms, detail: detail == null ? "" : String(detail) });
         record("selftest." + name, ms, true);
       } catch (e) {
         var ms2 = Math.round((now() - t0) * 10) / 10;
         var message = String((e && e.message) || e);
-        checks.push({ name: name, ok: false, ms: ms2, detail: message.slice(0, 300) });
-        record("selftest." + name, ms2, false, message);
-        captureError("selftest:" + name, e);
+        // "Skipped" is not a failure: the check did not run because there was
+        // nothing to probe (no watched profile yet) or this build has no such
+        // route. Counting it as a failure is what made a healthy fresh install
+        // raise the red "Spotispy hit a wall" ribbon.
+        var skipped = !!((e && e.skipped) || /^skipped\b/i.test(message));
+        checks.push({ name: name, ok: !skipped, state: skipped ? "skipped" : "fail", ms: ms2, detail: message.slice(0, 300) });
+        record("selftest." + name, ms2, !skipped, message);
+        if (!skipped) captureError("selftest:" + name, e);
       }
     }
 
@@ -238,7 +243,9 @@
         var A = S && S.Platform && S.Platform.PlaylistAPI;
         if (!net || !pwt.sources) throw new Error("net/sources missing");
         if (!A || typeof A.getContents !== "function") {
-          throw new Error("unsupported — this build has no Platform.PlaylistAPI; Spotispy uses the HTTP chain instead");
+          var eNoRoute = new Error("unsupported — this build has no Platform.PlaylistAPI; Spotispy uses the HTTP chain instead");
+          eNoRoute.skipped = true;
+          throw eNoRoute;
         }
         var res;
         try {
@@ -273,7 +280,9 @@
           watched = [];
         }
         if (!watched.length) {
-          throw new Error("skipped — no watched profile to probe (add one in Settings)");
+          var eSkip = new Error("skipped — no watched profile to probe (add one in Settings)");
+          eSkip.skipped = true;
+          throw eSkip;
         }
         var res;
         try {
@@ -303,10 +312,14 @@
     }
 
     var pass = checks.filter(function (c) { return c.ok; }).length;
+    var skipped = checks.filter(function (c) { return c.state === "skipped"; }).length;
     var result = {
       at: Date.now(),
       pass: pass,
-      fail: checks.length - pass,
+      // A skipped check is neither a pass nor a wall: it is reported apart so
+      // the UI can say "nothing to probe yet" instead of raising an alarm.
+      skipped: skipped,
+      fail: checks.filter(function (c) { return c.state === "fail"; }).length,
       total: checks.length,
       totalMs: Math.round((now() - tAll) * 10) / 10,
       checks: checks,
@@ -315,7 +328,7 @@
     count("selftests");
     if (store && store.setMeta) {
       try {
-        await store.setMeta("selfTest", { at: result.at, pass: result.pass, fail: result.fail, totalMs: result.totalMs });
+        await store.setMeta("selfTest", { at: result.at, pass: result.pass, skipped: result.skipped, fail: result.fail, totalMs: result.totalMs });
       } catch (e) {
         /* diagnostics must never break the app */
       }
