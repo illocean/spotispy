@@ -12,8 +12,8 @@
 
   var DEFAULTS = {
     pollMs: 3600000,
-    activityMs: 60000,
-    activityBoostMs: 10000,
+    activityMs: 5000,
+    activityBoostMs: 2000,
     activityBoost: true,
     notifyToast: true,
     notifyOs: true,
@@ -32,10 +32,10 @@
     pollMs: [900000, 1800000, 3600000, 10800000],
     // 0 means "off" and is a legal, documented choice (see Settings' "off"
     // option and the scheduler's `activityMs > 0` guards).
-    activityMs: [0, 30000, 60000, 120000],
+    activityMs: [0, 2000, 5000, 10000, 30000, 60000, 120000],
     // The boost interval must be a real cadence, never longer than the normal
     // one or it could never be "faster".
-    activityBoostMs: [5000, 10000, 30000],
+    activityBoostMs: [1000, 2000, 5000, 10000, 30000],
     // Retention in days. 0 means "never prune"; a stored string or negative
     // must fall back to the default rather than silently disabling the feature.
     retainDays: [0, 30, 90, 180, 365],

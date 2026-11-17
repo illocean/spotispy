@@ -56,7 +56,7 @@
     };
 
     function settings() {
-      return config ? config.get() : { pollMs: 3600000, activityMs: 60000, activityBoost: true, activityBoostMs: 10000 };
+      return config ? config.get() : { pollMs: 3600000, activityMs: 5000, activityBoost: true, activityBoostMs: 2000 };
     }
 
     function emit() {

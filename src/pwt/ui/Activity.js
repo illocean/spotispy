@@ -67,6 +67,7 @@
       errors: src.errors,
       source: src.source,
       lastTick: src.lastTick,
+      now: src.now || Date.now(),
     };
 
     // While the route loads, say so — "Nobody is sharing listening activity"
@@ -188,7 +189,7 @@
               h(kit.Avatar, { id: playing[0].userId, name: playing[0].name, src: playing[0].avatar, alt: playing[0].name, small: true }),
               h("span", { class: "pwt-now-name" }, playing[0].name),
               playing[0].contextLabel ? h("span", { class: "pwt-muted pwt-tiny" }, "· " + playing[0].contextLabel) : null,
-              h("span", { class: "pwt-muted pwt-tiny", title: u.fmtDateTime(playing[0].since) }, "· for " + playing[0].forLabel)
+              h("span", { class: "pwt-muted pwt-tiny", title: u.fmtDateTime(playing[0].since) }, "· for " + u.fmtDuration(m.now - playing[0].since))
             )
           )
         )
@@ -202,6 +203,7 @@
             "div",
             { class: "pwt-live-strip" },
             visibleLive.map(function (x) {
+              var liveDuration = u.fmtDuration(m.now - x.since);
               return h(
                 "div",
                 { class: "pwt-live-card", key: x.userId, "data-user": x.userId },
@@ -215,7 +217,7 @@
                 ),
                 x.trackArt ? h(kit.Thumb, { src: x.trackArt, alt: "", large: true, seed: x.trackUri }) : null,
                 h("span", { class: "pwt-live-state" }, h("span", { class: "pwt-dot" + (x.isPlaying ? " pwt-dot-live" : "") }), x.isPlaying ? "playing" : "paused"),
-                h("span", { class: "pwt-muted pwt-tiny", title: u.fmtDateTime(x.since) }, "for " + x.forLabel)
+                h("span", { class: "pwt-muted pwt-tiny", title: u.fmtDateTime(x.since) }, "for " + liveDuration)
               );
             })
           )
@@ -282,6 +284,8 @@
                     var open = !collapsed[s.id];
                     var tracks = Array.isArray(s.tracks) ? s.tracks : [];
                     var trackCount = s.trackCount == null ? "—" : s.trackCount + " track" + (s.trackCount === 1 ? "" : "s");
+                    var isInProgress = !s.endedAt;
+                    var rowDuration = isInProgress ? u.fmtDuration(m.now - s.startedAt) : s.durationLabel;
                     return h(
                       "div",
                       { class: "pwt-sess-entry" + (open ? " is-open" : ""), key: s.id },
@@ -307,18 +311,19 @@
                           h(
                             "span",
                             { class: "pwt-muted pwt-tiny" },
-                            u.fmtTime(s.startedAt) + (s.endedAt ? " – " + u.fmtTime(s.endedAt) : " · still open")
+                            u.fmtTime(s.startedAt) + (s.endedAt ? " – " + u.fmtTime(s.endedAt) : isInProgress ? " · in progress" : " · still open")
                           )
                         ),
                         h(
                           "span",
                           { class: "pwt-sess-meta" },
-                          h("span", { class: "pwt-sess-stat", title: "duration" }, s.durationLabel),
+                          h("span", { class: "pwt-sess-stat", title: isInProgress ? "in progress" : "duration" }, rowDuration),
                           h(
                             "span",
                             { class: "pwt-muted pwt-tiny pwt-sess-count" },
                             trackCount
                           ),
+                          isInProgress ? h(kit.Badge, { tone: "success" }, "live") : null,
                           s.loops ? h(kit.Badge, { tone: "info" }, "loop") : null,
                           s.skips ? h(kit.Badge, { tone: "warning" }, "skips") : null,
                           s.unclean

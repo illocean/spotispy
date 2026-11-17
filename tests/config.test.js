@@ -92,9 +92,9 @@ test("coerce still rejects values outside the allowed set", () => {
     c.set({ pollMs: 12345 });
     assert.equal(c.get().pollMs, 3600000, "an unlisted interval falls back to the default");
     c.set({ activityMs: 45000 });
-    assert.equal(c.get().activityMs, 60000, "an unlisted activity interval falls back too");
+    assert.equal(c.get().activityMs, 5000, "an unlisted activity interval falls back too");
     c.set({ activityMs: -1 });
-    assert.equal(c.get().activityMs, 60000, "a negative interval is rejected");
+    assert.equal(c.get().activityMs, 5000, "a negative interval is rejected");
     c.set({ logCap: -5 });
     assert.equal(c.get().logCap, 10000, "a negative quantity is rejected");
   } finally {
@@ -131,7 +131,7 @@ test("activityBoostMs is a real cadence and survives a reload", () => {
     assert.equal(c.raw().activityBoostMs, 5000, "and it reaches storage");
 
     c.set({ activityBoostMs: 60000 });
-    assert.equal(c.get().activityBoostMs, 10000, "a boost interval longer than any listed cadence is rejected");
+    assert.equal(c.get().activityBoostMs, 2000, "a boost interval longer than any listed cadence is rejected");
   } finally {
     c.restore();
   }

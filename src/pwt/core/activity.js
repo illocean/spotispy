@@ -223,6 +223,7 @@
     lastOnline = online;
 
     var tickRows = [];
+    var openSessions = [];
     for (var u in states) {
       // `states` only holds watched friends, so no per-row gate is needed.
       var st2 = states[u];
@@ -234,11 +235,32 @@
         trackUri: st2.lastTrackUri || "",
         contextUri: st2.lastContextUri || "",
       });
+      // Write the current open session to the sessions store so the Activity
+      // view can render it in real time. When the session closes later,
+      // finalizeSession() produces a row with the same `id`, so putSessions()
+      // overwrites this snapshot (keyPath is `id`).
+      if (st2.session && st2.session.id) {
+        var sess = st2.session;
+        openSessions.push({
+          id: sess.id,
+          userId: sess.userId,
+          startedAt: sess.startedAt,
+          endedAt: 0,
+          trackCount: sess.trackCount,
+          looped: sess.looped,
+          skipped: sess.skipped,
+          tracks: sess.tracks.slice(),
+          unclean: false,
+        });
+      }
       await db.put("activityState", Object.assign({ userId: u }, session.snapshot(st2)));
     }
 
     if (plays.length) await store.addPlays(plays);
+    // Write closed sessions first, then open ones: a closed session has a real
+    // endedAt, while an open one has endedAt: 0 so the view shows "in progress".
     if (sessions.length) await store.putSessions(sessions);
+    if (openSessions.length) await store.putSessions(openSessions);
     if (tickRows.length) {
       // Read only the aggregates this tick touches. This used to `getAll` the
       // whole store, so every tick paid for every friend-day ever retained (a

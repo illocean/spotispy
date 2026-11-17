@@ -13,9 +13,9 @@
     var m = props.model || {
       pollMs: 3600000,
       pollLabel: "60 min",
-      activityMs: 60000,
-      activityLabel: "60 s",
-      activityBoostMs: 10000,
+      activityMs: 5000,
+      activityLabel: "5 s",
+      activityBoostMs: 2000,
       toggles: [],
       retainDays: 90,
       logCap: 10000,
@@ -161,7 +161,7 @@
             h(kit.Select, {
               "data-pwt": "activity-ms",
               value: activityMs,
-              options: [30000, 60000, 120000, 0].map(function (ms) {
+              options: [2000, 5000, 10000, 30000, 60000, 120000, 0].map(function (ms) {
                 return { value: ms, label: ms ? view_ml(ms) : "off" };
               }),
               onChange: function (value) {
@@ -175,7 +175,7 @@
             h(kit.Select, {
               "data-pwt": "activity-boost-ms",
               value: activityBoostMs,
-              options: [5000, 10000, 30000].map(function (ms) {
+              options: [1000, 2000, 5000, 10000, 30000].map(function (ms) {
                 return { value: ms, label: view_ml(ms) };
               }),
               onChange: function (value) {

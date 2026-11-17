@@ -331,8 +331,8 @@ test("settings renders a control for every cadence and retention option", async 
   assert.ok(html.indexOf('data-pwt="activity-boost-ms"') >= 0, "the boost interval control");
   assert.ok(html.indexOf('data-pwt="retain-days"') >= 0, "the retention control");
   // The boost options must all be sub-minute: a "faster" cadence that is not
-  // faster would never engage.
-  assert.ok(html.indexOf("10 s") >= 0, "the boost interval renders in seconds, not '0 min'");
+  // faster would never engage. The default is now 2 s.
+  assert.ok(html.indexOf("2 s") >= 0, "the boost interval renders in seconds, not '0 min'");
 });
 
 test("the self-test runs every check and reports no failure", async () => {
@@ -542,6 +542,27 @@ test("clicking Run self-test shows the check results", async () => {
   const html = el.innerHTML;
   assert.ok(html.indexOf("IndexedDB opens and counts rows") >= 0, "a named check is listed");
   assert.ok(!(/(^|>)\s*undefined\s*(<|$)/.test(html)), "no literal undefined");
+  unmountControllers();
+});
+
+test("clicking Run self-test never crashes on an undefined pwt (regression)", async () => {
+  const { P } = state;
+  const el = await mountController("settings");
+  // Let the mount-time auto-diag FULLY settle first (a success badge proves a
+  // real completed run), so the click's result is the only writer afterwards.
+  // Without this, the passing auto-diag result can mask the click's crash.
+  await waitFor(function () { return el.querySelector(".pwt-badge-success"); }, "auto-diag settled");
+  await new Promise(function (r) { setTimeout(r, 250); });
+  const button = Array.from(el.querySelectorAll("button")).find((b) => b.textContent.indexOf("Run self-test") >= 0);
+  assert.ok(button, "the self-test button is rendered");
+  button.click();
+  // The crash was a synchronous ReferenceError (pwt.telemetry on an undeclared
+  // var), so a short settle is enough for the click's result to be final.
+  await new Promise(function (r) { setTimeout(r, 500); });
+  const html = el.innerHTML;
+  assert.ok(html.indexOf("pwt is not defined") < 0, "the self-test never references an undefined pwt");
+  assert.ok(html.indexOf("self-test crashed") < 0, "no 'self-test crashed' row is produced");
+  assert.ok(html.indexOf("IndexedDB opens and counts rows") >= 0, "the real checks ran: " + html.slice(0, 200));
   unmountControllers();
 });
 

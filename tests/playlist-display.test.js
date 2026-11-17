@@ -109,6 +109,32 @@ test("a change row carries its own track title, not a bare id", () => {
   assert.equal(kit.humanDetail({ kind: "playlist.item.removed", detail: "0000000000000000000009" }), "removed");
 });
 
+test("humanDetail shows before → after for a rename, and never for an image", () => {
+  const kit = require("../src/pwt/ui/kit.js");
+  // A real rename carries both values.
+  assert.equal(
+    kit.humanDetail({ kind: "profile.name.changed", extra: { from: "Bob", to: "Robert" } }),
+    "Bob → Robert"
+  );
+  assert.equal(
+    kit.humanDetail({ kind: "profile.playlist.renamed", extra: { from: "Old Name", to: "New Name" } }),
+    "Old Name → New Name"
+  );
+  // A first observation has no stored "before"; it just names the new value.
+  assert.equal(
+    kit.humanDetail({ kind: "profile.name.changed", extra: { to: "Robert" } }),
+    "now called “Robert”"
+  );
+  // Images never print a before/after pair.
+  assert.equal(kit.humanDetail({ kind: "profile.avatar.changed", extra: { from: "h1", to: "h2" } }), "new picture");
+  assert.equal(kit.humanDetail({ kind: "profile.playlist.cover.changed", extra: { from: "c1", to: "c2" } }), "new cover");
+  // Followers keep their from → to form.
+  assert.equal(
+    kit.humanDetail({ kind: "profile.followers.count", extra: { from: 100, to: 101 } }),
+    "100 → 101"
+  );
+});
+
 test("evaluate stores the title in detail, never a track id", () => {
   const Playlists = require("../src/pwt/core/playlists.js");
   const U = require("../src/pwt/util/util.js");
@@ -135,4 +161,49 @@ test("evaluate stores the title in detail, never a track id", () => {
   const second = added.filter(function (e) { return e.uri === TRACKS[1]; })[0];
   assert.equal(first.detail, "First Light", "a known track carries its title");
   assert.equal(second.detail, "", "an unknown track carries nothing rather than an id");
+});
+
+test("evaluate logs a cover change with no before/after hash", () => {
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff });
+
+  const out = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverHash: "cover-old", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverHash: "cover-new", coverUrl: "https://i.scdn.co/new" },
+    Date.now(),
+    {}
+  );
+  const covers = out.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers.length, 1, "the cover change is logged");
+  // A cover is an image: no before/after hash pair in the detail.
+  assert.ok(covers[0].detail.indexOf("cover-old") < 0, "no before hash in the detail: " + covers[0].detail);
+  assert.ok(covers[0].detail.indexOf("cover-new") < 0, "no after hash in the detail: " + covers[0].detail);
+  // The structured before/after still rides in extra for the export.
+  assert.equal(covers[0].extra.from, "cover-old");
+  assert.equal(covers[0].extra.to, "cover-new");
+});
+
+test("evaluate still logs a name change as before → after", () => {
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff });
+
+  const out = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "Old Name", coverHash: "c", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "New Name", coverHash: "c" },
+    Date.now(),
+    {}
+  );
+  const renames = out.events.filter(function (e) { return e.kind === "profile.playlist.renamed"; });
+  assert.equal(renames.length, 1, "the rename is logged");
+  assert.equal(renames[0].detail, "name: Old Name → New Name", "a non-image scalar keeps before → after");
 });

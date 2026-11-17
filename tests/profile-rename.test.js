@@ -39,4 +39,25 @@ test("a real name change is still logged", () => {
   assert.equal(renames.length, 1, "a real rename is logged: " + JSON.stringify(renames));
   assert.equal(renames[0].extra.from, "Bob");
   assert.equal(renames[0].extra.to, "Robert");
+  // And the detail carries both values, not just the new one.
+  assert.equal(renames[0].detail, "name: Bob → Robert", "a name change keeps before → after in the detail");
+});
+
+test("an avatar change logs no before/after hash in the detail", () => {
+  // A profile picture is an image: the detail names the change, not the hashes.
+  const { win, P } = h.boot();
+  const calls = { toasts: [], nav: [], get: [], post: [], handlers: [] };
+  h.stubSpicetify(win, calls);
+
+  const prev = { id: "u1", name: "Bob", avatarHash: "hash-old", followers: 10, plays: [], playlists: [] };
+  const next = { id: "u1", name: "Bob", avatarHash: "hash-new", followers: 10, plays: [], playlists: [] };
+
+  const d = P.profiles.diffProfile(prev, next, 1000);
+  const avatars = (d.events || []).filter(function (e) { return e.kind === "profile.avatar.changed"; });
+  assert.equal(avatars.length, 1, "the avatar change is logged: " + JSON.stringify(avatars));
+  assert.ok(avatars[0].detail.indexOf("hash-old") < 0, "no before hash in the detail: " + avatars[0].detail);
+  assert.ok(avatars[0].detail.indexOf("hash-new") < 0, "no after hash in the detail: " + avatars[0].detail);
+  // The structured before/after still rides in extra for the export.
+  assert.equal(avatars[0].extra.from, "hash-old");
+  assert.equal(avatars[0].extra.to, "hash-new");
 });

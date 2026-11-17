@@ -192,7 +192,9 @@
             target: id,
             kind: kind,
             title: next.name || "",
-            detail: f.field + ": " + (f.from == null ? "—" : f.from) + " → " + (f.to == null ? "—" : f.to),
+            // An image change (avatar) carries no before/after — a hash pair is
+            // noise, not a name. Every other scalar keeps "field: from → to".
+            detail: f.field === "avatarHash" ? "avatar changed" : f.field + ": " + (f.from == null ? "—" : f.from) + " → " + (f.to == null ? "—" : f.to),
             extra: { field: f.field, from: f.from, to: f.to },
           },
           now

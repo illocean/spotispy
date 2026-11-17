@@ -53,6 +53,7 @@
     routeRef.current = route;
     var lastScanSeenRef = useRef(0);
     var lastCrashSeenRef = useRef(0);
+    var lastActivitySeenRef = useRef(0);
     var filterRef = useRef(filter);
     filterRef.current = filter;
     var playlistFilterRef = useRef(playlistFilter);
@@ -329,6 +330,7 @@
      * lived inside the Settings block, retry was a dead button everywhere else.
      */
     function runSelfTest() {
+      var pwt = P;
       setDiag({ running: true, result: diag.result });
       Promise.resolve()
         .then(function () {
@@ -827,6 +829,7 @@
             errors: health.errors,
             source: health.source,
             lastTick: health.at,
+            now: now,
             live: vm.liveStrip(records, states, now, liveTracks),
             sessions: vm.sessionCards(sessions, tracksCache, activityMeta),
             heat: vm.heatmap(plays, now),
@@ -1077,11 +1080,15 @@
               setModel(function (m) {
                 return Object.assign({}, m, { scan: busSnapshot(), liveNow: liveNowIds() });
               });
-              // When a scan completes while the tab is open, every route
-              // re-reads its data — not just the scan button's own .then().
+              // Reload when a scan completes, a crash surfaces, OR an activity
+              // tick records new data. Activity ticks are frequent (10-60s), so
+              // the reload is gated on lastActivityAt to avoid reloading on
+              // every bus emit (which also fires from progress updates).
               var seen = lastScanSeenRef.current;
               var cur = bus && bus.lastScanAt;
               var crash = bus && bus.crashAt;
+              var actSeen = lastActivitySeenRef.current;
+              var actCur = bus && bus.lastActivityAt;
               if (crash && crash !== lastCrashSeenRef.current) {
                 lastCrashSeenRef.current = crash;
                 // A crash writes lastScanResult without touching lastScanAt, so
@@ -1092,6 +1099,11 @@
                 // load may have raced the scan's writes.
                 load(routeRef.current, { selected: selectedRef.current, playlistId: playlistIdRef.current });
                 lastScanSeenRef.current = cur;
+              } else if (routeRef.current === "activity" && actCur && actCur !== actSeen) {
+                // Activity tick wrote new plays/sessions/presence — reload so
+                // the view reflects them without a manual page refresh.
+                load(routeRef.current, { selected: selectedRef.current, playlistId: playlistIdRef.current });
+                lastActivitySeenRef.current = actCur;
               }
             } catch (e) {
               /* a broken bus listener must not break the scheduler */
@@ -1115,6 +1127,40 @@
         if (root.document) root.document.removeEventListener("visibilitychange", handler);
       };
     }, []);
+
+    // Activity route: re-render every 10s so durations tick smoothly, and
+    // full DB reload every 30s as a safety net in case a bus listener missed
+    // an activity tick (e.g. the tick fired while load() was already in flight).
+    useEffect(
+      function () {
+        if (route !== "activity") return undefined;
+        var ticks = 0;
+        var timer = null;
+        if (root.document && root.document.visibilityState === "visible") {
+          timer = setInterval(function () {
+            ticks++;
+            if (ticks % 5 === 0) {
+              // Every 5s: full reload to pick up any sessions written since
+              // the last load. This is the safety net for when the bus listener's
+              // load() call was dropped by the seq guard (a concurrent load was
+              // already in flight when the activity tick fired).
+              load(routeRef.current, { selected: selectedRef.current, playlistId: playlistIdRef.current });
+            } else {
+              // Every 1s: just update `now` so durations tick.
+              setModel(function (m) {
+                return m.route === "activity" && m.model
+                  ? Object.assign({}, m, { model: Object.assign({}, m.model, { now: Date.now() }) })
+                  : m;
+              });
+            }
+          }, 1000);
+        }
+        return function () {
+          if (timer) clearInterval(timer);
+        };
+      },
+      [route]
+    );
 
     /**
      * Run the self-test automatically on first mount and surface failures

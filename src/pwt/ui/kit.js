@@ -118,6 +118,10 @@
     switch (r.kind) {
       case "profile.name.changed":
       case "profile.playlist.renamed":
+        // A real change shows before → after. A first observation has no stored
+        // "from", so it just names the new value. Image changes (avatar/cover)
+        // have their own cases and never print before/after.
+        if (from != null && from !== "") return String(from) + " → " + String(to == null ? "" : to);
         return to ? "now called “" + to + "”" : "name changed";
       case "profile.avatar.changed":
         return "new picture";

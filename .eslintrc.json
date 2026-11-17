@@ -1,0 +1,34 @@
+{
+  "root": true,
+  "env": { "browser": true, "node": true, "es2022": true },
+  "parserOptions": { "ecmaVersion": 2022, "sourceType": "script" },
+  "globals": {
+    "Spicetify": "readonly",
+    "React": "readonly",
+    "ReactDOM": "readonly"
+  },
+  "rules": {
+    "no-undef": "error",
+    "no-unreachable": "error",
+    "no-dupe-keys": "error",
+    "no-dupe-args": "error",
+    "no-cond-assign": "error",
+    "no-constant-condition": "error",
+    "no-self-assign": "error",
+    "no-self-compare": "error",
+    "no-unsafe-negation": "error",
+    "no-unsafe-optional-chaining": "error",
+    "no-obj-calls": "error",
+    "no-sparse-arrays": "error",
+    "no-unexpected-multiline": "error",
+    "use-isnan": "error",
+    "valid-typeof": "error",
+    "no-fallthrough": "error",
+    "no-func-assign": "error",
+    "no-import-assign": "error",
+    "no-setter-return": "error",
+    "no-unsafe-finally": "error",
+    "no-constant-binary-expression": "error",
+    "no-unused-vars": ["error", { "args": "none", "varsIgnorePattern": "^_" }]
+  }
+}

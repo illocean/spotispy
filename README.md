@@ -129,11 +129,11 @@ All settings are local. Defaults are applied on first load and saved to LocalSto
 | Setting | Default | Options | What it controls |
 | --- | --- | --- | --- |
 | Change scan interval (`pollMs`) | `3600000` (60 min) | `900000` (15 min), `1800000` (30 min), `3600000` (60 min), `10800000` (180 min) | How often the scheduler runs a full scan (profiles, then playlists). A manual scan is never blocked by this interval. |
-| Activity interval (`activityMs`) | `60000` (60 s) | `30000` (30 s), `60000` (60 s), `120000` (120 s), `0` (off) | How often the listening-activity feed is polled. One request covers every watched friend each tick. |
-| Boost interval (`activityBoostMs`) | `10000` (10 s) | `5000` (5 s), `10000` (10 s), `30000` (30 s) | The faster cadence used while `activityBoost` is on and at least one friend is listening. The error back-off always wins over it. |
+| Activity interval (`activityMs`) | `5000` (5 s) | `2000` (2 s), `5000` (5 s), `10000` (10 s), `30000` (30 s), `60000` (60 s), `120000` (120 s), `0` (off) | How often the listening-activity feed is polled. One request covers every watched friend each tick. |
+| Boost interval (`activityBoostMs`) | `2000` (2 s) | `1000` (1 s), `2000` (2 s), `5000` (5 s), `10000` (10 s), `30000` (30 s) | The faster cadence used while `activityBoost` is on and at least one friend is listening. The error back-off always wins over it. |
 | Activity retention (`retainDays`) | `90` (90 days) | `0` (keep forever), `30`, `90`, `180`, `365` | How much activity history to keep. Older rows are deleted after a scan, at most once a day. |
 
-Activity has an adaptive cadence: when friends are online and `activityBoost` is on, it ticks faster (`activityBoostMs`, default 10 s). When the feed returns an error, the timer is re-armed at no faster than 3 min (`ACTIVITY_ERROR_BACKOFF_MS`).
+Activity has an adaptive cadence: when friends are online and `activityBoost` is on, it ticks faster (`activityBoostMs`, default 2 s). When the feed returns an error, the timer is re-armed at no faster than 3 min (`ACTIVITY_ERROR_BACKOFF_MS`).
 
 A manual scan that runs less than 5 min after the last full scan is skipped unless forced.
 

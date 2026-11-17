@@ -499,7 +499,8 @@
             target: id,
             kind: c.field === "coverHash" ? "profile.playlist.cover.changed" : c.field === "name" ? "profile.playlist.renamed" : "playlist.meta.changed",
             title: title,
-            detail: c.field + ": " + (c.from == null ? "—" : c.from) + " → " + (c.to == null ? "—" : c.to),
+            // A cover is an image: no before/after hash pair, just the fact.
+            detail: c.field === "coverHash" ? "cover changed" : c.field + ": " + (c.from == null ? "—" : c.from) + " → " + (c.to == null ? "—" : c.to),
             extra: { field: c.field, from: c.from, to: c.to },
           },
           now
