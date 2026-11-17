@@ -4,8 +4,8 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node --test --test-isolation=process --test-timeout=60000 --test-force-exit \"tests/*.test.js\"",
-    "test:ui": "node --test --test-isolation=process --test-timeout=60000 --test-force-exit \"tests/ui/*.test.js\"",
+    "test": "node --test --test-timeout=60000 --test-force-exit \"tests/*.test.js\"",
+    "test:ui": "node --test --test-timeout=60000 --test-force-exit \"tests/ui/*.test.js\"",
     "lint": "eslint \"src/**/*.js\" \"index.js\"",
     "lint:fix": "eslint --fix \"src/**/*.js\" \"index.js\"",
     "test:all": "npm run lint && npm test && npm run test:ui",
