@@ -1,8 +1,28 @@
 # Spotispy
 
+[![CI](https://img.shields.io/github/actions/workflow/status/illocean/spotispy/ci.yml?branch=main&label=ci&logo=github)](https://github.com/illocean/spotispy/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.2.0-1DB954) ![License](https://img.shields.io/badge/license-MIT-blue) ![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white) ![Platform](https://img.shields.io/badge/platform-Spotify%20Desktop-1DB954?logo=spotify&logoColor=white) ![Local only](https://img.shields.io/badge/local--only-no%20cloud-4c1)
+
 A local-only Spicetify extension and custom app that watches public Spotify profiles and playlists, logs every observable change with the date it was seen, and keeps a listening-activity feed for friends who share it.
 
 Runs inside the Spotify client. No third-party accounts. No cost. Nothing leaves your browser profile except exports you initiate.
+
+## Screenshots
+
+**Overview — everyone at a glance**
+
+![Spotispy overview dashboard with profile chips, playlist totals, a 30-day chart and recent changes](assets/overview.png)
+
+**Overview — one profile**
+
+![Spotispy per-profile dashboard with public playlists and an updates timeline](assets/overview2.png)
+
+**Listening activity**
+
+![Spotispy listening activity with live friends, a 14-day heatmap and listening sessions](assets/activity.png)
+
+**Change log**
+
+![Spotispy change log table with filters and JSON/CSV export](assets/changelog.png)
 
 ## Status and legal
 
@@ -25,47 +45,84 @@ Data lives in the browser's IndexedDB (database `playlist-watchtower`, kept so e
 
 A scan runs on a fixed cadence (default 60 min) through a source chain per target. A failed source writes nothing and is reported as what it is: unreachable, rate limited, not found. A scan that writes nothing still says what it did.
 
+## API services
+
+Every read goes through the running Spotify client. Spotispy carries no tokens of its own and calls no third-party service.
+
+```mermaid
+flowchart LR
+    SP["Spotispy<br/>extension + custom app"]
+    TR["Spicetify transport<br/>CosmosAsync · client session headers"]
+    SP --> TR
+
+    subgraph SVCS["Spotify services"]
+        S1["spclient.wg.spotify.com<br/>profiles · followers · listening feed"]
+        S2["api-partner.spotify.com<br/>Pathfinder GraphQL · playlist data"]
+        S3["api.spotify.com/v1<br/>playlists · tracks · /me"]
+        S4["open.spotify.com/embed<br/>__NEXT_DATA__ artwork"]
+        S5["guc-spclient.spotify.com<br/>buddylist presence"]
+        S6["Client globals<br/>PlaylistAPI · GraphQL"]
+    end
+
+    TR --> S1
+    TR --> S2
+    TR --> S3
+    TR --> S4
+    TR --> S5
+    TR --> S6
+
+    S1 --> STORE[("Local data<br/>IndexedDB · playlist-watchtower<br/>LocalStorage · settings")]
+    S2 --> STORE
+    S3 --> STORE
+    S4 --> STORE
+    S5 --> STORE
+    S6 --> STORE
+    STORE --> SP
+```
+
+All endpoints are defined in one place: `src/pwt/core/sources.js`.
+
 ## Features
 
-### Watching
+### 👀 Watching
 
-- Watch any public playlist or user profile.
-- Add from Settings (paste a URL or a `spotify:playlist:` / `spotify:user:` id), or right-click in Spotify and pick a Watch entry.
-- Each watched item records its state at scan time. The first scan seeds a baseline; later scans log only what changed.
+- 🔎 Watch any public playlist or user profile.
+- ➕ Add from Settings (paste a URL or a `spotify:playlist:` / `spotify:user:` id), or right-click in Spotify and pick a Watch entry.
+- 🧭 Each watched item records its state at scan time. The first scan seeds a baseline; later scans log only what changed.
 
-### Change detection
+### 🔔 Change detection
 
 Per playlist:
 
-- Track added.
-- Track removed.
-- Playlist renamed.
-- Playlist cover changed.
-- Playlist description changed.
-- Follower count changed.
-- Track list truncated by a source (the row is marked capped; removals are not proven from a capped read).
-- Source failed (health degrades after 3 consecutive failures, then recovers on a clean scan).
+- ➕ Track added.
+- ➖ Track removed.
+- ✏️ Playlist renamed.
+- 🖼️ Playlist cover changed.
+- 📝 Playlist description changed.
+- 👥 Follower count changed.
+- ✂️ Track list truncated by a source (the row is marked capped; removals are not proven from a capped read).
+- ⚠️ Source failed (health degrades after 3 consecutive failures, then recovers on a clean scan).
 
 Per profile:
 
-- Display name changed.
-- Avatar changed.
-- Playlist appeared (new playlist on the profile).
-- Playlist disappeared (departed, renamed away, or made private; resolved by id).
-- Playlist renamed or cover changed, even for playlists you do not watch directly.
-- Playlist visibility changed (public <-> private).
-- Follower count changed.
-- Follower appeared or disappeared (when the follower/following list is reachable on this client).
+- 🏷️ Display name changed.
+- 🖼️ Avatar changed.
+- 📥 Playlist appeared (new playlist on the profile).
+- 📤 Playlist disappeared (departed, renamed away, or made private; resolved by id).
+- ✏️ Playlist renamed or cover changed, even for playlists you do not watch directly.
+- 🔒 Playlist visibility changed (public <-> private).
+- 👥 Follower count changed.
+- 👤 Follower appeared or disappeared (when the follower/following list is reachable on this client).
 
 Listening activity (friends who share it):
 
-- Play events.
-- Session start and end.
-- Loop and skip flags.
-- Online / hidden transitions.
-- 14-day heatmap of presence.
+- ▶️ Play events.
+- ⏱️ Session start and end.
+- 🔁 Loop and skip flags.
+- 🟢 Online / hidden transitions.
+- 📊 14-day heatmap of presence.
 
-### What the change log records
+### 📋 What the change log records
 
 Every logged change is one row, whatever produced it:
 
@@ -75,50 +132,50 @@ Every logged change is one row, whatever produced it:
 
 `ts` is the sort key. `sourceDate` is set only when Spotify itself supplied a date; otherwise the row is observation-only and the UI shows the `obs` chip and stores the value as `observedAt`. `sourceDate` and `observedAt` are never mixed.
 
-### Honest failure reporting
+### ✅ Honest failure reporting
 
 Spotify's client answers some requests with a resolved error body that carries a bogus status. Spotispy classifies every failure by what actually happened.
 
-- `Failed to fetch` (flat or nested): transport failure. Reported as unreachable, no response. Code `network`. No rate backoff.
-- Genuine `429`: reported as rate limited. Code `rate`. Backoff engages.
-- `404` or a removed resolver: reported as not found. Code `notfound`. Negative cache for 6 h.
-- Real payload: parsed normally.
+- 🌐 `Failed to fetch` (flat or nested): transport failure. Reported as unreachable, no response. Code `network`. No rate backoff.
+- ⏳ Genuine `429`: reported as rate limited. Code `rate`. Backoff engages.
+- 🔍 `404` or a removed resolver: reported as not found. Code `notfound`. Negative cache for 6 h.
+- ✔️ Real payload: parsed normally.
 
 No fabricated status anywhere: not in the self-test, the scan path, profiles, or artwork.
 
-### Artwork
+### 🎨 Artwork
 
 Every tile uses the real Spotify picture when one exists. The artwork layer resolves covers through the routes the client actually answers and caches them locally under `art:<uri>`.
 
-- Client GraphQL for track album-of-track cover.
-- Profile view payload (playlist covers ride along).
-- Embed page `__NEXT_DATA__`.
-- Mosaic composites, resolved as their 2x2 tiles.
-- Nothing resolves: a gradient identicon fallback. No broken image icons.
+- 🎵 Client GraphQL for track album-of-track cover.
+- 👤 Profile view payload (playlist covers ride along).
+- 🌐 Embed page `__NEXT_DATA__`.
+- 🧩 Mosaic composites, resolved as their 2x2 tiles.
+- 🖼️ Nothing resolves: a gradient identicon fallback. No broken image icons.
 
 The sweep after each scan is best effort and never blocks a scan. `PWT_ART_DISABLED = true` force-disables it (tests, offline).
 
-### Design
+### 🖤 Design
 
 Flat, Spicetify-native dark interface. One near-black surface, quiet elevated cards, 1px hairline borders, a single green accent (`--spice-button`), no gradients or glows.
 
 Nothing fails silently:
 
-- A route that cannot load shows a failure ribbon with the reason and a retry button.
-- A failing action raises a toast.
-- A view that throws is caught by an error boundary that keeps the nav bar alive and offers reload / go-to-overview.
-- A crash at boot or mount renders a visible crash screen with the message, stack, and a hint to run the self-test.
+- 🚧 A route that cannot load shows a failure ribbon with the reason and a retry button.
+- 🔔 A failing action raises a toast.
+- 🛡️ A view that throws is caught by an error boundary that keeps the nav bar alive and offers reload / go-to-overview.
+- 💥 A crash at boot or mount renders a visible crash screen with the message, stack, and a hint to run the self-test.
 
 ## Views
 
 | View | What it shows |
 | --- | --- |
-| Overview | Per-user dashboard: avatar chips, watched playlists, last change per playlist, Watch/Open actions, listening-now chip, Updates timeline, 30-day chart, and an honest scan summary line. |
-| Profiles | Roster with per-profile timeline (picture, name, playlists, followers) and honest follower/following states. |
-| Playlist detail | Real cover, rename/cover timeline, per-track added/removed with art, `obs` chip, source provenance, health badge, hold-and-confirm guard against mass removals. |
-| Activity | Live "playing now" hero and strip, sessions grouped by local day with loop/skip flags, presence bars, a 14-day heatmap, and in-place search. |
-| Change log | Global filterable table with pictures and dates. Search, level filter, kind filter. Export JSON or CSV. |
-| Settings | Poll and activity cadence, notifications, watch-list management, data counts, export, purge, and Diagnostics. |
+| 📊 Overview | Per-user dashboard: avatar chips, watched playlists, last change per playlist, Watch/Open actions, listening-now chip, Updates timeline, 30-day chart, and an honest scan summary line. |
+| 👥 Profiles | Roster with per-profile timeline (picture, name, playlists, followers) and honest follower/following states. |
+| 🎵 Playlist detail | Real cover, rename/cover timeline, per-track added/removed with art, `obs` chip, source provenance, health badge, hold-and-confirm guard against mass removals. |
+| 📈 Activity | Live "playing now" hero and strip, sessions grouped by local day with loop/skip flags, presence bars, a 14-day heatmap, and in-place search. |
+| 📜 Change log | Global filterable table with pictures and dates. Search, level filter, kind filter. Export JSON or CSV. |
+| ⚙️ Settings | Poll and activity cadence, notifications, watch-list management, data counts, export, purge, and Diagnostics. |
 
 ## Settings
 
@@ -147,7 +204,7 @@ A manual scan that runs less than 5 min after the last full scan is skipped unle
 | `notifyRemovals` | `true` | Toast on track removals. |
 | `notifyProfile` | `true` | Toast on profile-level changes (name, avatar, playlists, followers). |
 | `notifyPresence` | `true` | Toast when a watched friend goes online or out of view. |
-| `activityBoost` | `true` | Faster activity polls while a friend is playing (`activityBoostMs`, default 10 s). |
+| `activityBoost` | `true` | Faster activity polls while a friend is playing (`activityBoostMs`, default 2 s). |
 | `followers` | `true` | Track follower / following lists when the client allows it. Reports ok / degraded / unavailable instead of a silent zero. |
 
 The Settings page shows whether OS notifications are supported and their current permission state on this client.
