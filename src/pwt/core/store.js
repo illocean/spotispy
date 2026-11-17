@@ -314,6 +314,22 @@
       });
   }
 
+  /**
+   * TRUE count of change rows that target one id (a profile id or a playlist
+   * id), read straight off the `target` index. Unlike `changesFor`/`recentChanges`
+   * this is not a truncated sample: it exists so the UI can say "showing X
+   * newest of Y" honestly. A rejection means the count is UNKNOWN — callers
+   * must render a dash, never a zero.
+   */
+  function countChangesFor(target) {
+    return db().countIndex("changes", "target", target);
+  }
+
+  /** TRUE total of all change rows (honesty; not a truncated sample). */
+  function countChanges() {
+    return db().count("changes");
+  }
+
   /** Day aggregates for a set of levels, as {day, added, removed, edits, plays}. */
   function dailyTotals(levels, fromDay) {
     return db()
@@ -426,6 +442,8 @@
     commitScan: commitScan,
     recentChanges: recentChanges,
     changesFor: changesFor,
+    countChangesFor: countChangesFor,
+    countChanges: countChanges,
     dailyTotals: dailyTotals,
     listWatches: listWatches,
     putWatch: putWatch,

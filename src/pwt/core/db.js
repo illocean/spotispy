@@ -234,6 +234,21 @@
   }
 
   /**
+   * Count the records in an index equal to `key` (an exact-match count, not a
+   * sample). Used for the honest "N newest of TOTAL" disclosures in the UI: the
+   * feeds stay capped for rendering, but the number they claim to be a subset
+   * of must be the real total. A failed count rejects — the caller renders an
+   * unknown marker rather than a misleading zero.
+   */
+  function countIndex(store, index, key) {
+    var KeyRange = (typeof globalThis !== "undefined" && globalThis.IDBKeyRange) || (typeof IDBKeyRange !== "undefined" ? IDBKeyRange : null);
+    var range = KeyRange ? KeyRange.only(key) : key;
+    return tx(store, "readonly", function (t) {
+      return req(t.objectStore(store).index(index).count(range));
+    });
+  }
+
+  /**
    * Read one index range in a single transaction.
    * @param {string} store
    * @param {string} index
@@ -446,6 +461,7 @@
     put: put,
     del: del,
     count: count,
+    countIndex: countIndex,
     range: range,
     batch: batch,
     pruneOlderThan: pruneOlderThan,

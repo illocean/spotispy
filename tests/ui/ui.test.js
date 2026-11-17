@@ -284,14 +284,22 @@ test("activity renders sessions as grouped, filterable rows and no Top contexts"
   assert.ok(html.indexOf('aria-expanded="true"') >= 0, "session rows render expanded by default");
   assert.ok(html.indexOf('data-pwt="sess-user"') >= 0, "the user filter renders");
   assert.ok(html.indexOf('data-pwt="sess-days"') >= 0, "the date preset filter renders");
+  // Check the rendered session rows, never the raw HTML: the chevrons carry
+  // viewBox="0 0 24 24", so scanning the whole string for "Bo" matches
+  // "viewBox" and reports a false positive.
+  const sessNames = function (html) {
+    const scope = win.document.createElement("div");
+    scope.innerHTML = html;
+    return Array.from(scope.querySelectorAll(".pwt-sess-row .pwt-sess-name")).map(function (n) { return n.textContent; });
+  };
   // The "today" preset keeps only the session that started today.
   const todayHtml = await render(P, win, P.ui.Activity, { model: base, filter: { query: "", days: "today" }, onFilter: function () {} });
   assert.equal((todayHtml.match(/pwt-sess-row[ "]/g) || []).length, 1, "the today preset filters by local day");
-  assert.ok(todayHtml.indexOf("Bo") < 0, "the two-day-old session is filtered out");
+  assert.deepEqual(sessNames(todayHtml), ["Ari"], "the two-day-old Bo session is filtered out");
   // The user filter keeps only the chosen friend.
   const userHtml = await render(P, win, P.ui.Activity, { model: base, filter: { query: "", user: "fixture-bbb" }, onFilter: function () {} });
   assert.equal((userHtml.match(/pwt-sess-row[ "]/g) || []).length, 1, "the user filter selects one friend");
-  assert.ok(userHtml.indexOf("Bo") >= 0, "the kept session belongs to Bo");
+  assert.deepEqual(sessNames(userHtml), ["Bo"], "the kept session belongs to Bo");
 });
 
 test("the change log renders images and dates", async () => {

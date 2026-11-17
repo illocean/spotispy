@@ -16,6 +16,14 @@
     return isFinite(v) ? v : 0;
   }
 
+  /** 0-23 hour bucket -> 12-hour label, e.g. 0 -> "12:00 AM", 13 -> "1:00 PM". */
+  function hourLabel(hour) {
+    var suffix = hour >= 12 ? "PM" : "AM";
+    var h12 = hour % 12;
+    if (h12 === 0) h12 = 12;
+    return h12 + ":00 " + suffix;
+  }
+
   /**
    * Stacked area for additions vs removals over days.
    * @param {Array} points [{day:'2026-11-10', added:3, removed:1}]
@@ -164,7 +172,7 @@
                 key: hour,
                 class: "pwt-heat-cell",
                 style: style,
-                title: d.day + " " + (hour < 10 ? "0" + hour : hour) + ":00 · " + v + (v === 1 ? " play" : " plays"),
+                title: d.day + " " + hourLabel(hour) + " · " + v + (v === 1 ? " play" : " plays"),
               });
             })
           )

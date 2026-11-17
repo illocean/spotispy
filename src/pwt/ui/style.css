@@ -276,7 +276,10 @@ button.pwt-toggle:focus-visible {
 }
 .pwt-select-trigger:hover { border-color: var(--sp-line-strong); background: var(--sp-surface-hover); }
 .pwt-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pwt-select-chevron { flex: 0 0 auto; color: var(--sp-sub); font-size: 12px; line-height: 1; transition: transform 0.16s ease; }
+/* Fixed-size, block-level box: rotating it 180deg never changes layout, and
+   the inner SVG fills it so the glyph stays centred through the animation. */
+.pwt-select-chevron { flex: 0 0 auto; display: block; width: 14px; height: 14px; transform-origin: center center; color: var(--sp-sub); transition: transform 0.16s ease, color 0.16s ease; }
+.pwt-select-chevron svg { display: block; width: 100%; height: 100%; }
 .pwt-select.is-open .pwt-select-chevron { transform: rotate(180deg); color: var(--sp-green); }
 .pwt-select-list {
   position: absolute;
@@ -572,7 +575,8 @@ button.pwt-toggle:focus-visible {
 .pwt-acc-head:focus-visible { outline: 2px solid var(--sp-green); outline-offset: -2px; }
 .pwt-acc-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sp-text); flex: 0 0 auto; }
 .pwt-acc-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
-.pwt-acc-chevron { flex: 0 0 auto; color: var(--sp-sub); font-size: 14px; line-height: 1; transition: transform 0.18s ease; }
+.pwt-acc-chevron { flex: 0 0 auto; display: block; width: 16px; height: 16px; transform-origin: center center; color: var(--sp-sub); transition: transform 0.18s ease, color 0.18s ease; }
+.pwt-acc-chevron svg { display: block; width: 100%; height: 100%; }
 .pwt-acc.is-open .pwt-acc-chevron { transform: rotate(180deg); color: var(--sp-green); }
 .pwt-acc-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 /* Collapsing must actually collapse: without this the body kept its full
@@ -875,6 +879,15 @@ button.pwt-toggle:focus-visible {
 }
 .pwt-watch-main { display: flex; flex-direction: column; min-width: 0; }
 .pwt-watch-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Grouped watch list: one hairline between groups, children indented by a
+   second hairline. The rows themselves keep their existing flat styling. */
+.pwt-watch-group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--sp-line); }
+.pwt-watch-list > .pwt-watch-group:first-child { padding-top: 0; border-top: 0; }
+.pwt-watch-group-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pwt-watch-group-head > .pwt-watch-row { flex: 1 1 auto; }
+.pwt-watch-group-count { flex: 0 0 auto; }
+.pwt-watch-group-none { font-size: 12px; font-weight: 700; color: var(--sp-sub); }
+.pwt-watch-children { display: flex; flex-direction: column; gap: 6px; margin-left: 14px; padding-left: 12px; border-left: 1px solid var(--sp-line); }
 .pwt-export { display: inline-flex; gap: 8px; margin-left: auto; }
 .pwt-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .pwt-field { display: flex; flex-direction: column; gap: 5px; color: var(--sp-text); }
@@ -956,7 +969,7 @@ button.pwt-toggle:focus-visible {
   .pwt-sess-filter .pwt-select { width: 100%; }
 }
 
-@media (prefers-reduced-motion: reduce) { .pwt-btn, .pwt-change, .pwt-user-card, .pwt-chip, .pwt-progress-fill, .pwt-sess-row, .pwt-nav-github { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .pwt-btn, .pwt-change, .pwt-user-card, .pwt-chip, .pwt-progress-fill, .pwt-sess-row, .pwt-nav-github, .pwt-select-chevron, .pwt-acc-chevron { transition: none !important; } }
 
 .pwt-user-card.is-scanning { border-color: var(--sp-green-soft); }
 .pwt-scanning { display: inline-flex; align-items: center; gap: 6px; color: var(--sp-green); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }

@@ -62,6 +62,56 @@ test("userDashboard selects the first watched user and maps playlists and update
   assert.equal(dash.users[0].watchedPlaylists, 1);
 });
 
+test("userDashboard reports true change counts while keeping feeds capped", () => {
+  const now = Date.now();
+  const userId = "user00000000000000000001";
+  const playlistId = "37i9dQZF1DXcBWIGoYBM5M";
+  const recent = [];
+  for (let i = 0; i < 24; i++) {
+    recent.push({
+      kind: "playlist.item.added",
+      level: "playlist",
+      target: i % 2 ? userId : playlistId,
+      uri: "spotify:track:t" + i,
+      detail: "Song " + i,
+      ts: now - i * 1000,
+    });
+  }
+  const data = {
+    profiles: [{
+      id: userId,
+      name: "Ari",
+      plays: [{ uri: "spotify:playlist:" + playlistId, name: "Night Drive" }],
+    }],
+    playlists: [{ id: playlistId, name: "Night Drive", ownerId: userId }],
+    watches: [
+      { kind: "profile", id: userId },
+      { kind: "playlist", id: playlistId },
+    ],
+    recent,
+    daily: {},
+    changeCounts: { [userId]: 20 }, // true total, larger than the 14-row feed
+    totalChanges: 20,
+    scan: {},
+  };
+
+  const dash = V.userDashboard(data, null, now);
+  assert.equal(dash.detail.updatesCount, 20, "the badge uses the true count");
+  assert.equal(dash.detail.updates.length, 14, "the feed stays capped at 14 for rendering");
+  assert.equal(dash.users[0].changes, 20, "the chip reports the true count");
+  assert.equal(dash.totalChanges, 20, "the aggregate carries the true total through");
+
+  // Backward compatibility: no changeCounts at all -> fall back to the sample
+  // lengths, exactly as before this feature existed.
+  const withoutCounts = Object.assign({}, data);
+  delete withoutCounts.changeCounts;
+  delete withoutCounts.totalChanges;
+  const fallback = V.userDashboard(withoutCounts, null, now);
+  assert.equal(fallback.detail.updatesCount, 24, "unknown count falls back to the sample size");
+  assert.equal(fallback.users[0].changes, 24);
+  assert.equal(fallback.totalChanges, undefined, "no total is invented when none was supplied");
+});
+
 test("userDashboard honours the explicit everyone selection", () => {
   const now = Date.now();
   const data = {

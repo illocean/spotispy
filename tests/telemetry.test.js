@@ -102,3 +102,45 @@ test("runSelfTest reports a failing check instead of throwing", async () => {
   // too, so `!ok` no longer identifies a failure on its own.)
   assert.ok(result.checks.some((c) => c.state === "fail" && /store down/.test(c.detail)));
 });
+
+test("a failing route probe is a failed check, not a captured error", async () => {
+  // The real-world "the client playlist route failed: timed out after 5s" used
+  // to land in telemetry.errors and show up in the diagnostics "errors caught"
+  // list. A route that is merely slow/unreachable is environmental, not an
+  // application error: it must be reported as a failed check, but not captured.
+  T.reset();
+  globalThis.Spicetify = {
+    CosmosAsync: {},
+    Platform: { PlaylistAPI: { getContents: function () { return Promise.reject(new Error("timed out after 8s")); } } },
+  };
+  globalThis.PWT.net = {
+    call: function () { return Promise.reject(new Error("timed out after 8s")); },
+    bodyError: function () { return null; },
+  };
+  globalThis.PWT.sources = {
+    SOURCES: {
+      clientContents: { fn: function () { return { client: "playlistapi" }; }, parse: function () { return { uris: [] }; } },
+    },
+  };
+
+  const fakeDb = { open: async function () { return {}; }, count: async function () { return 0; }, getAll: async function () { return []; } };
+  const fakeStore = {
+    recentChanges: async function () { return []; },
+    listWatches: async function () { return []; },
+    setMeta: async function () {},
+  };
+
+  const result = await T.runSelfTest({ db: fakeDb, store: fakeStore, bus: {}, probeNetwork: true });
+
+  const routeCheck = result.checks.find((c) => /client playlist API/.test(c.name));
+  assert.ok(routeCheck, "the playlist-route check ran");
+  assert.equal(routeCheck.state, "fail", "the route probe is reported as a failed check: " + routeCheck.detail);
+  assert.ok(result.fail >= 1, "the failed probe counts toward the self-test fail total");
+
+  const captured = T.report().errors.filter((e) => /^selftest:/.test(e.scope));
+  assert.equal(
+    captured.length,
+    0,
+    "route-probe failures are not captured as telemetry errors: " + JSON.stringify(captured.map((e) => e.scope))
+  );
+});

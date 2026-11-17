@@ -90,7 +90,17 @@
           },
           h("span", { class: "pwt-acc-title" }, title),
           hint ? h("span", { class: "pwt-muted pwt-tiny pwt-acc-hint" }, hint) : null,
-          h("span", { class: "pwt-acc-chevron", "aria-hidden": "true" }, "⌄")
+          // Inline SVG chevron: a fixed-size box (see style.css) that rotates
+          // about its centre, so toggling never reflows or shifts the glyph.
+          h(
+            "span",
+            { class: "pwt-acc-chevron", "aria-hidden": "true" },
+            h(
+              "svg",
+              { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+              h("path", { d: "M6 9l6 6 6-6" })
+            )
+          )
         ),
         h.apply(null, ["div", { class: "pwt-acc-body" }].concat(children))
       );
@@ -119,6 +129,80 @@
         node,
         hint ? h("span", { class: "pwt-muted pwt-tiny" }, hint) : null
       );
+    }
+
+    // One watch row, shared by the profile group heads, their nested
+    // playlists and the "None" group. Keeping a single tree means every row
+    // keeps its badge/thumbnail, caption and Unwatch behaviour.
+    function watchRow(w) {
+      return h(
+        "div",
+        { class: "pwt-watch-row", key: w.kind + w.id, "data-watch": w.kind + ":" + w.id },
+        w.image
+          ? h(kit.Thumb, { src: w.image, alt: "", seed: w.id })
+          : h(kit.Badge, { tone: w.kind === "profile" ? "info" : "neutral" }, w.kind),
+        h(
+          "span",
+          { class: "pwt-watch-main" },
+          h("span", { class: "pwt-watch-name", title: w.label || undefined }, w.label || (w.kind === "profile" ? "Unknown listener" : "Untitled playlist")),
+          h(
+            "span",
+            { class: "pwt-muted pwt-tiny" },
+            w.kind + (w.addedAt ? " · since " + util.fmtDate(w.addedAt) : "")
+          )
+        ),
+        h(kit.Btn, {
+          label: "Unwatch",
+          ghost: true,
+          danger: true,
+          onClick: function () {
+            if (props.onUnwatch) props.onUnwatch(w.kind, w.id);
+          },
+        })
+      );
+    }
+
+    // The watch list is hierarchical: each watched profile is a group, and its
+    // playlists are nested under it. Unowned / unowned-by-a-watched-profile
+    // playlists land in a final "None" group so nothing ever disappears.
+    function watchList() {
+      var watches = props.watches || [];
+      if (!watches.length) {
+        return h("div", { class: "pwt-watch-list" }, h(kit.Empty, { title: "Nothing watched yet", hint: "Add a playlist or profile above." }));
+      }
+      var g = root.PWT.view.watchGroups(watches);
+      var children = g.groups.map(function (group) {
+        var count = group.playlists.length;
+        return h(
+          "div",
+          { class: "pwt-watch-group", key: "profile:" + group.profile.id },
+          h(
+            "div",
+            { class: "pwt-watch-group-head" },
+            watchRow(group.profile),
+            count
+              ? h("span", { class: "pwt-watch-group-count pwt-muted pwt-tiny" }, count + (count === 1 ? " playlist" : " playlists"))
+              : null
+          ),
+          count ? h("div", { class: "pwt-watch-children" }, group.playlists.map(watchRow)) : null
+        );
+      });
+      if (g.none.length) {
+        children.push(
+          h(
+            "div",
+            { class: "pwt-watch-group", key: "none" },
+            h(
+              "div",
+              { class: "pwt-watch-group-head" },
+              h("span", { class: "pwt-watch-group-none" }, "None"),
+              h("span", { class: "pwt-watch-group-count pwt-muted pwt-tiny" }, "playlists with no watched owner")
+            ),
+            h("div", { class: "pwt-watch-children" }, g.none.map(watchRow))
+          )
+        );
+      }
+      return h.apply(null, ["div", { class: "pwt-watch-list" }].concat(children));
     }
 
     return h(
@@ -280,39 +364,7 @@
           })
         ),
         props.addError ? h("div", { class: "pwt-error", role: "alert" }, props.addError) : null,
-        h(
-          "div",
-          { class: "pwt-watch-list" },
-          (props.watches || []).length
-            ? props.watches.map(function (w) {
-                return h(
-                  "div",
-                  { class: "pwt-watch-row", key: w.kind + w.id, "data-watch": w.kind + ":" + w.id },
-                  w.image
-                    ? h(kit.Thumb, { src: w.image, alt: "", seed: w.id })
-                    : h(kit.Badge, { tone: w.kind === "profile" ? "info" : "neutral" }, w.kind),
-                  h(
-                    "span",
-                    { class: "pwt-watch-main" },
-                    h("span", { class: "pwt-watch-name", title: w.label || undefined }, w.label || (w.kind === "profile" ? "Unknown listener" : "Untitled playlist")),
-                    h(
-                      "span",
-                      { class: "pwt-muted pwt-tiny" },
-                      w.kind + (w.addedAt ? " · since " + util.fmtDate(w.addedAt) : "")
-                    )
-                  ),
-                  h(kit.Btn, {
-                    label: "Unwatch",
-                    ghost: true,
-                    danger: true,
-                    onClick: function () {
-                      if (props.onUnwatch) props.onUnwatch(w.kind, w.id);
-                    },
-                  })
-                );
-              })
-            : h(kit.Empty, { title: "Nothing watched yet", hint: "Add a playlist or profile above." })
-        )
+        watchList()
       ),
 
       section(

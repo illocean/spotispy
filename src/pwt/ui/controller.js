@@ -517,11 +517,76 @@
           });
           var lastResult = (await store.getMeta("lastScanResult", null)) || null;
           var allWatches = (await store.listWatches()) || [];
+
+          // Honest change totals. `recent` above is deliberately capped (200 on
+          // Overview), so a bar built from it alone would under-report. Count the
+          // WHOLE log by target and ship those numbers beside the capped sample;
+          // the view can then say "showing X newest of Y" without inventing data.
+          // A count that cannot be read is UNKNOWN (null), never a fake zero.
+          var changeCounts = {};
+          try {
+            var profilesById = {};
+            profilesAll.forEach(function (p) {
+              profilesById[p.id] = p;
+            });
+            var profileIds = new Set();
+            profilesAll.forEach(function (p) {
+              profileIds.add(p.id);
+            });
+            // Include every watched profile, even one whose row is not in the
+            // profiles store any more — its own changes still have a true total.
+            (allWatches || []).forEach(function (w) {
+              if (w && w.kind === "profile" && w.id) profileIds.add(w.id);
+            });
+            // One count per distinct target, shared across profiles: a playlist
+            // watched by two people (or named twice) is counted only once.
+            var targetSet = new Set();
+            var targetsByProfile = {};
+            profileIds.forEach(function (pid) {
+              var p = profilesById[pid] || { id: pid, plays: [] };
+              var list = [pid];
+              (p.plays || []).forEach(function (x) {
+                var plid = String((x && x.uri) || "").split(":")[2];
+                if (plid) list.push(plid);
+              });
+              targetsByProfile[pid] = list;
+              list.forEach(function (t) { targetSet.add(t); });
+            });
+            var targetCounts = {};
+            await Promise.all(Array.from(targetSet).map(async function (t) {
+              try {
+                targetCounts[t] = await store.countChangesFor(t);
+              } catch (e) {
+                targetCounts[t] = null; // unknown, never 0
+              }
+            }));
+            Object.keys(targetsByProfile).forEach(function (pid) {
+              var list = targetsByProfile[pid];
+              var sum = 0;
+              for (var ci = 0; ci < list.length; ci++) {
+                var n = targetCounts[list[ci]];
+                if (n == null) { sum = null; break; } // one unknown ⇒ total unknown
+                sum += n;
+              }
+              changeCounts[pid] = sum;
+            });
+          } catch (eCounts) {
+            /* leave whatever was computed; missing profiles read as unknown in the view */
+          }
+          var totalChanges = null;
+          try {
+            totalChanges = await store.countChanges();
+          } catch (eTotal) {
+            /* unknown total — the view renders a dash, never a fake 0 */
+          }
+
           out.dashboard = {
             profiles: profilesAll,
             playlists: playlistsAll,
             watches: allWatches,
             recent: recent,
+            changeCounts: changeCounts,
+            totalChanges: totalChanges,
             daily: daily,
             lastScanAt: (await store.getMeta("lastScanAt", 0)) || 0,
             nextScanAt: pwt.bus ? pwt.bus.nextScanAt : 0,
@@ -842,16 +907,43 @@
           var imgUrlS = function (ref) {
             return u.imageUrl ? u.imageUrl(ref) : ref || "";
           };
+          // Ownership drives the grouped watch list. A stored playlist may
+          // carry ownerId; older rows do not, so fall back to the watched
+          // profiles' `plays` URIs (the same list userDashboard uses). The view
+          // sends playlists whose owner is not watched to its "None" group, so
+          // an unknown owner can never make a watch disappear.
+          var profileRows = await db.getAll("profiles") || [];
+          var watchedProfileIds = Object.create(null);
+          for (var wi = 0; wi < watches.length; wi++) {
+            if (watches[wi] && watches[wi].kind === "profile" && watches[wi].id != null) {
+              watchedProfileIds[String(watches[wi].id)] = true;
+            }
+          }
+          var playsOwner = Object.create(null);
+          for (var pr = 0; pr < profileRows.length; pr++) {
+            var ownerProfile = profileRows[pr];
+            // Only a WATCHED profile can be a group head. An unwatched owner
+            // makes the playlist an orphan, which the view puts in "None".
+            if (!ownerProfile || !watchedProfileIds[String(ownerProfile.id)]) continue;
+            var plays = ownerProfile.plays || [];
+            for (var pl = 0; pl < plays.length; pl++) {
+              var playedId = plays[pl] && String(plays[pl].uri).split(":")[2];
+              if (playedId && !playsOwner[playedId]) playsOwner[playedId] = ownerProfile.id;
+            }
+          }
           for (var w = 0; w < watches.length; w++) {
             // The watch list shows names, never ids; an unresolved name waits
             // for the next scan instead of displaying a 22-character hash.
             var kindName = watches[w].kind === "playlist" ? "Untitled playlist" : "Unknown listener";
             var label = watches[w].name || kindName;
             var image = "";
+            var ownerId = "";
             if (watches[w].kind === "playlist") {
               var prow = await db.get("playlists", watches[w].id);
               if (prow && prow.name) label = prow.name;
               if (prow) image = imgUrlS(prow.coverUrl);
+              if (prow && prow.ownerId && watchedProfileIds[String(prow.ownerId)]) ownerId = prow.ownerId;
+              if (!ownerId) ownerId = playsOwner[watches[w].id] || "";
             } else {
               var urow = await db.get("profiles", watches[w].id);
               if (urow && profileName(urow.name)) label = profileName(urow.name);
@@ -865,7 +957,11 @@
               }
               if (urow) image = imgUrlS(urow.avatarUrl);
             }
-            labelled.push(Object.assign({}, watches[w], { label: label, image: image }));
+            var extra = { label: label, image: image };
+            // Additive only: profile watches need no owner, and every existing
+            // watch field (kind/id/name/addedAt) is carried through unchanged.
+            if (watches[w].kind === "playlist") extra.ownerId = ownerId;
+            labelled.push(Object.assign({}, watches[w], extra));
           }
           var settingsMissing = [];
           labelled.forEach(function (w) {

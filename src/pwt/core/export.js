@@ -56,7 +56,14 @@
     var pad = function (n) {
       return (n < 10 ? "0" : "") + n;
     };
-    return prefix + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + "." + ext;
+    // 12-hour time in filenames: no ':' or space, so it stays filesystem-safe.
+    // e.g. 14:05 -> "2-05PM", 00:30 -> "12-30AM", 12:00 -> "12-00PM".
+    var hours = d.getHours();
+    var hour12 = hours % 12;
+    if (hour12 === 0) hour12 = 12;
+    var suffix = hours >= 12 ? "PM" : "AM";
+    var time = hour12 + "-" + pad(d.getMinutes()) + suffix;
+    return prefix + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + time + "." + ext;
   }
 
   return { toRows: toRows, toCsv: toCsv, toJson: toJson, download: download, filename: filename };

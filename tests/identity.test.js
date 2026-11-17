@@ -95,3 +95,12 @@ test("fmtTime renders 12-hour local time with padded minutes", () => {
   assert.equal(U.fmtTime(new Date(2026, 10, 14, 11, 59).getTime()), "11:59 AM");
   assert.equal(U.fmtTime(new Date(2026, 10, 14, 13, 45).getTime()), "1:45 PM");
 });
+
+test("fmtDateTime renders a 12-hour local time with padded minutes", () => {
+  // Local-time components keep this timezone-safe (no ISO string / UTC shift).
+  assert.equal(U.fmtDateTime(new Date(2026, 10, 10, 14, 5).getTime()), "10 Nov 2026, 2:05 PM");
+  assert.equal(U.fmtDateTime(new Date(2026, 10, 10, 0, 30).getTime()), "10 Nov 2026, 12:30 AM");
+  assert.equal(U.fmtDateTime(new Date(2026, 10, 10, 12, 0).getTime()), "10 Nov 2026, 12:00 PM");
+  // The null / non-finite guard still returns the em-dash placeholder.
+  assert.equal(U.fmtDateTime(null), U.fmtDateTime(NaN));
+});

@@ -43,13 +43,19 @@
    * "All" chip.
    *
    * data: { profiles, playlists, watches, recent, daily, lastScanAt,
-   *         nextScanAt, lastScanTotals, scan }
+   *         nextScanAt, lastScanTotals, scan, changeCounts, totalChanges }
+   *
+   * `changeCounts` (per profile id) and `totalChanges` are TRUE counts of the
+   * whole change log, supplied by the controller. They are additive: when they
+   * are absent (or a value is unknown/null) the view falls back to the length of
+   * the capped sample it has, keeping older callers backward compatible.
    */
   function userDashboard(data, selectedId, now) {
     var profiles = data.profiles || [];
     var plRows = data.playlists || [];
     var watches = data.watches || [];
     var changes = data.recent || [];
+    var countMap = data.changeCounts || {};
     var plById = {};
     plRows.forEach(function (pl) {
       plById[pl.id] = pl;
@@ -97,7 +103,9 @@
         activity: !!p.watchActivity,
         publicPlaylists: (p.plays || []).length,
         watchedPlaylists: watchedCount,
-        changes: own.length,
+        // The chip badge reports the TRUE count when the controller supplied
+        // one; otherwise fall back to the capped sample (older callers).
+        changes: countMap[p.id] != null ? countMap[p.id] : own.length,
         lastChangeAt: last ? last.ts : 0,
         lastChangeLabel: last ? last.detail : "",
         health: p.health || "new",
@@ -120,6 +128,7 @@
       var profile = profiles.filter(function (p) {
         return p.id === selected.id;
       })[0];
+      var ownChanges = changesOf(profile);
       var playlists = (profile.plays || []).map(function (x) {
         var pid = String(x.uri || "").split(":")[2];
         var row = pid ? plById[pid] : null;
@@ -148,7 +157,9 @@
         watchedAt: selected.watchedAt,
         lastSyncedAt: selected.lastSyncedAt,
         playlists: playlists,
-        updates: changesOf(profile).slice(0, 14),
+        // Feed stays capped for rendering; the count beside it is the true total.
+        updates: ownChanges.slice(0, 14),
+        updatesCount: countMap[selected.id] != null ? countMap[selected.id] : ownChanges.length,
       };
     }
 
@@ -169,6 +180,7 @@
       lastScanTotals: aggregate.lastScanTotals,
       lastResult: aggregate.lastResult,
       scan: aggregate.scan,
+      totalChanges: aggregate.totalChanges,
       empty: aggregate.empty,
     };
   }
@@ -210,6 +222,7 @@
       scan: data.scan || {},
       series: series,
       recent: (data.recent || []).slice(0, 20),
+      totalChanges: data.totalChanges,
       empty: !(data.profiles || []).length && !(data.playlists || []).length,
     };
   }
@@ -519,6 +532,45 @@
     });
   }
 
+  /**
+   * Group the Settings watch list by watched profile (pure).
+   *
+   * A playlist belongs under the watched profile that owns it. Playlists whose
+   * owner is unknown or not watched go into `none` so nothing disappears from
+   * the UI. Profiles keep their input order and stay in the result even when
+   * they have no playlists (the view then renders no nested list for them).
+   * Input rows are never mutated.
+   */
+  function watchGroups(watches) {
+    var rows = watches || [];
+    var profiles = [];
+    var playlists = [];
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i]) continue;
+      if (rows[i].kind === "profile") profiles.push(rows[i]);
+      else if (rows[i].kind === "playlist") playlists.push(rows[i]);
+    }
+    var watchedIds = Object.create(null);
+    for (var p = 0; p < profiles.length; p++) {
+      if (profiles[p].id != null) watchedIds[String(profiles[p].id)] = true;
+    }
+    var groups = profiles.map(function (profile) {
+      var pid = profile.id == null ? "" : String(profile.id);
+      var kids = [];
+      for (var j = 0; j < playlists.length; j++) {
+        var owner = playlists[j].ownerId;
+        if (owner && String(owner) === pid) kids.push(playlists[j]);
+      }
+      return { profile: profile, playlists: kids };
+    });
+    var none = [];
+    for (var k = 0; k < playlists.length; k++) {
+      var ownerId = playlists[k].ownerId;
+      if (!ownerId || !watchedIds[String(ownerId)]) none.push(playlists[k]);
+    }
+    return { groups: groups, none: none, total: rows.length };
+  }
+
   /** Settings model (§5.6). */
   function settingsModel(settings, info) {
     var u = U();
@@ -576,6 +628,7 @@
     topContexts: topContexts,
     labelForContext: labelForContext,
     filterChanges: filterChanges,
+    watchGroups: watchGroups,
     settingsModel: settingsModel,
     minutesLabel: minutesLabel,
     formatBytes: formatBytes,

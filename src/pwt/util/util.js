@@ -75,15 +75,12 @@
     return "spotify:user:" + userId(id);
   }
 
-  /** Human date and time, local, e.g. "10 Nov 2026, 14:05". */
+  /** Human date and 12-hour time, local, e.g. "10 Nov 2026, 2:05 PM". */
   function fmtDateTime(ts) {
     if (ts == null || !isFinite(ts)) return "â€”";
     var d = new Date(ts);
     var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return (
-      d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear() + ", " +
-      pad(d.getHours()) + ":" + pad(d.getMinutes())
-    );
+    return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear() + ", " + fmtTime(ts);
   }
 
   function fmtDate(ts) {

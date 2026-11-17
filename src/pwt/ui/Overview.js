@@ -257,7 +257,7 @@
       );
       var feed = h(
         kit.Section,
-        { title: "Recent changes · 20 newest" },
+        { title: "Recent changes · 20 newest of " + (dash.totalChanges != null ? dash.totalChanges : "—") },
         dash.recent.length
           ? h(DayFeed, { rows: dash.recent, keyPrefix: "ov", onOpenTrack: props.onOpenTrack })
           : h(kit.Empty, { title: "No changes yet", hint: "Watch something, then scan." })
@@ -357,7 +357,7 @@
       { class: "pwt-kpis pwt-kpis-tight" },
       h(kit.Stat, { value: detail.playlists.length, label: "public playlists" }),
       h(kit.Stat, { value: detail.playlists.filter(function (p) { return p.watched; }).length, label: "watched" }),
-      h(kit.Stat, { value: detail.updates.length, label: "recent updates" })
+      h(kit.Stat, { value: detail.updatesCount != null ? detail.updatesCount : "—", label: "recent updates" })
     );
 
     var playlistCards = detail.playlists.length
@@ -424,7 +424,7 @@
       chips,
       h(kit.Section, { title: "", class: "pwt-user-section" }, header, stats),
       h(kit.Section, { title: "Public playlists" }, playlistCards),
-      h(kit.Section, { title: "Updates" }, updates)
+      h(kit.Section, { title: "Updates · showing " + detail.updates.length + " newest of " + (detail.updatesCount != null ? detail.updatesCount : "—") }, updates)
     );
   }
 

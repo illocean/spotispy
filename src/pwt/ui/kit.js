@@ -551,7 +551,17 @@
           },
         },
         h("span", { class: "pwt-select-value" }, shown),
-        h("span", { class: "pwt-select-chevron", "aria-hidden": "true" }, "⌄")
+        // Inline SVG chevron: a fixed-size box (see style.css) that rotates
+        // about its centre, so toggling never reflows or shifts the glyph.
+        h(
+          "span",
+          { class: "pwt-select-chevron", "aria-hidden": "true" },
+          h(
+            "svg",
+            { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+            h("path", { d: "M6 9l6 6 6-6" })
+          )
+        )
       ),
       open
         ? h(

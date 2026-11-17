@@ -144,6 +144,20 @@
   async function runSelfTest(deps) {
     deps = deps || {};
     var pwt = root.PWT || {};
+    // Deterministic 12-hour stamp for the scheduler self-test, matching the UI
+    // and export format. Prefer the app's central formatter; the local fallback
+    // keeps the self-test from throwing (and stays 12-hour) if util did not load.
+    function fmtStamp(ts) {
+      var u = pwt.util;
+      if (u && typeof u.fmtDateTime === "function") return u.fmtDateTime(ts);
+      if (ts == null || !isFinite(ts)) return "—";
+      var d = new Date(ts);
+      var hours = d.getHours();
+      var h12 = hours % 12 || 12;
+      var mm = d.getMinutes();
+      var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear() + ", " + h12 + ":" + (mm < 10 ? "0" : "") + mm + " " + (hours >= 12 ? "PM" : "AM");
+    }
     var checks = [];
     var tAll = now();
 
@@ -164,13 +178,26 @@
         var skipped = !!((e && e.skipped) || /^skipped\b/i.test(message));
         checks.push({ name: name, ok: !skipped, state: skipped ? "skipped" : "fail", ms: ms2, detail: message.slice(0, 300) });
         record("selftest." + name, ms2, !skipped, message);
-        if (!skipped) captureError("selftest:" + name, e);
+        // A route probe that could not get a clean answer (timeout, unreachable,
+        // error body) is environmental, not an application error: it is reported
+        // as a failed check, but must not be captured into telemetry.errors,
+        // where a transient slow route would masquerade as a crash. App-layer
+        // failures (db, settings, change log) still capture normally.
+        if (!skipped && !(e && e.soft)) captureError("selftest:" + name, e);
       }
     }
 
     var db = deps.db || pwt.db;
     var store = deps.store || pwt.store;
     var bus = deps.bus || pwt.bus;
+
+    // Marks a route-probe failure as environmental (see the capture guard in
+    // `check`): reported as a failed check, never captured as a telemetry error.
+    function softError(message) {
+      var e = new Error(message);
+      e.soft = true;
+      return e;
+    }
 
     await check("IndexedDB opens and counts rows", async function () {
       if (!db) throw new Error("PWT.db is missing");
@@ -211,9 +238,9 @@
     await check("Scheduler bus alive", async function () {
       if (!bus) throw new Error("no shared bus; boot did not complete");
       if (bus.lastScanAt) {
-        return "last scan " + new Date(bus.lastScanAt).toLocaleString() + (bus.scanning ? " · scanning now" : "");
+        return "last scan " + fmtStamp(bus.lastScanAt) + (bus.scanning ? " · scanning now" : "");
       }
-      return "never scanned · next at " + (bus.nextScanAt ? new Date(bus.nextScanAt).toLocaleString() : "—");
+      return "never scanned · next at " + (bus.nextScanAt ? fmtStamp(bus.nextScanAt) : "—");
     });
 
     await check("Spicetify client session", async function () {
@@ -252,16 +279,19 @@
           res = await Promise.race([
             net.call(pwt.sources.SOURCES.clientContents.fn("37i9dQZF1DXcBWIGoYBM5M")),
             new Promise(function (_, reject) {
-              setTimeout(function () { reject(new Error("timed out after 5s")); }, 5000);
+              // 5s was too tight for a cold first read (the self-test runs on
+              // mount, before any scan has warmed the route); 8s forgives a slow
+              // start without letting a genuinely stuck route hang the test.
+              setTimeout(function () { reject(new Error("timed out after 8s")); }, 8000);
             }),
           ]);
         } catch (e) {
-          throw new Error("the client playlist route failed: " + String((e && e.message) || e));
+          throw softError("the client playlist route failed: " + String((e && e.message) || e));
         }
         var be = net.bodyError ? net.bodyError(res) : null;
-        if (be) throw new Error("the client playlist route returned an error: " + (be.message || "unknown"));
+        if (be) throw softError("the client playlist route returned an error: " + (be.message || "unknown"));
         var parsed = pwt.sources.SOURCES.clientContents.parse(res);
-        if (!parsed.uris.length) throw new Error("the client playlist route answered, but carried no track URIs");
+        if (!parsed.uris.length) throw softError("the client playlist route answered, but carried no track URIs");
         return "responded with " + parsed.uris.length + " of " + (parsed.total == null ? "?" : parsed.total) + " tracks";
       });
 
@@ -289,14 +319,18 @@
           res = await Promise.race([
             net.call(pwt.sources.ENDPOINTS.profile(watched[0].id, { playlistLimit: 1, artistLimit: 0, episodeLimit: 0 })),
             new Promise(function (_, reject) {
-              setTimeout(function () { reject(new Error("timed out after 6s")); }, 6000);
+              // 8s to match the playlist probe and forgive a cold first read.
+              setTimeout(function () { reject(new Error("timed out after 8s")); }, 8000);
             }),
           ]);
         } catch (e) {
           var eMsg = String((e && e.message) || "");
           var eTransport = pwt.util && pwt.util.isTransportFailure && pwt.util.isTransportFailure(eMsg);
           // A status means the client answered; anything else never got there.
-          throw new Error((e && e.status) && !eTransport ? "http " + e.status + ": " + eMsg : "unreachable — " + eMsg);
+          // Either way the route did not give a clean answer, so this is a soft
+          // (environmental) failure: reported as a failed check, not a captured
+          // error.
+          throw softError((e && e.status) && !eTransport ? "http " + e.status + ": " + eMsg : "unreachable — " + eMsg);
         }
         var be = net.bodyError ? net.bodyError(res) : null;
         if (be) {
@@ -304,10 +338,10 @@
           // unreachable, anything else is a real answer shown through the
           // shared wording (never a fabricated status).
           var text = net.describeError ? net.describeError(res) : String((be && be.message) || res);
-          throw new Error(be.transport ? "unreachable — " + text : text);
+          throw softError(be.transport ? "unreachable — " + text : text);
         }
         if (res && res.uri) return "responded for " + (res.name || res.uri);
-        throw new Error("answered with an unexpected shape (no profile uri)");
+        throw softError("answered with an unexpected shape (no profile uri)");
       });
     }
 
