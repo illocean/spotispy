@@ -63,35 +63,33 @@
           },
           "data-pwt": "log-search",
         }),
-        h(
-          "select",
-          {
-            class: "pwt-input pwt-input-sm",
-            value: filter.level,
-            onChange: function (ev) {
-              if (props.onFilter) props.onFilter({ query: filter.query, kind: filter.kind, level: ev.target.value });
-            },
-            "data-pwt": "log-level",
+        // kit.Select, not a native <select>: Spotify's CEF renderer refuses to
+        // open native select popups (see kit.Select). These two filters were the
+        // last native selects in the app and did not open in the client.
+        h(kit.Select, {
+          "data-pwt": "log-level",
+          value: filter.level,
+          options: [
+            { value: "", label: "all levels" },
+            { value: "profile", label: "profile" },
+            { value: "playlist", label: "playlist" },
+          ],
+          onChange: function (v) {
+            if (props.onFilter) props.onFilter({ query: filter.query, kind: filter.kind, level: v });
           },
-          h("option", { value: "" }, "all levels"),
-          h("option", { value: "profile" }, "profile"),
-          h("option", { value: "playlist" }, "playlist")
-        ),
-        h(
-          "select",
-          {
-            class: "pwt-input pwt-input-sm",
-            value: filter.kind,
-            onChange: function (ev) {
-              if (props.onFilter) props.onFilter({ query: filter.query, kind: ev.target.value, level: filter.level });
-            },
-            "data-pwt": "log-kind",
+        }),
+        h(kit.Select, {
+          "data-pwt": "log-kind",
+          value: filter.kind,
+          options: [{ value: "", label: "all kinds" }].concat(
+            kinds.map(function (k) {
+              return { value: k, label: k };
+            })
+          ),
+          onChange: function (v) {
+            if (props.onFilter) props.onFilter({ query: filter.query, kind: v, level: filter.level });
           },
-          h("option", { value: "" }, "all kinds"),
-          kinds.map(function (k) {
-            return h("option", { value: k, key: k }, k);
-          })
-        ),
+        }),
         h(
           "span",
           { class: "pwt-export" },

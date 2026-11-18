@@ -238,7 +238,7 @@
       name: displayName(p.name, "Unknown listener"),
       avatarUrl: p.avatarUrl,
       followers: p.followers,
-      playlistCount: (p.playlists || []).length,
+      playlistCount: (p.plays || []).length,
       watchedPlaylists: owned.length,
       watchedAt: p.watchedAt || 0,
       lastSyncedAt: p.lastSyncedAt || 0,

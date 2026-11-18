@@ -679,13 +679,22 @@ test("a log filter never blanks the playlist view", async () => {
     state.playlistBaseline = true;
   }
   const el = await mountController("log");
-  // Filter the log by a change kind, then open a playlist from the log.
-  const select = el.querySelector('[data-pwt="log-kind"]');
-  assert.ok(select, "the log kind filter is rendered");
-  const option = Array.from(select.options).find((o) => o.value.indexOf("playlist.") === 0);
-  assert.ok(option, "a playlist change kind is offered");
-  select.value = option.value;
-  select.dispatchEvent(new win.Event("change", { bubbles: true }));
+  // Filter the log by a change kind, then open a playlist from the log. The kind
+  // filter is a kit.Select (button + in-page listbox): native <select> popups do
+  // not open in Spotify's CEF renderer, so the test drives it the way a user
+  // does — open the list, then pick the option.
+  const trigger = el.querySelector('[data-pwt="log-kind"]');
+  assert.ok(trigger, "the log kind filter is rendered");
+  // Read the offered kinds from the option list once it is open.
+  const kindTrigger = trigger;
+  kindTrigger.click();
+  const option = await waitFor(function () {
+    // The open list is a ul.pwt-select-list inside the same .pwt-select wrapper.
+    const wrap = kindTrigger.closest(".pwt-select");
+    const opts = wrap ? Array.from(wrap.querySelectorAll(".pwt-select-option")) : [];
+    return opts.find((o) => o.textContent.indexOf("playlist.") === 0) || null;
+  }, "a playlist change kind option");
+  option.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true }));
   await waitFor(function () { return el.querySelectorAll("tbody tr").length; }, "the filtered log");
   const row = await waitFor(function () {
     const rows = Array.from(el.querySelectorAll("tbody tr"));

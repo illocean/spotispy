@@ -1,5 +1,5 @@
 /* eslint-disable */
-/** Spotispy â€” small dependency-free utilities. */
+/** Spotispy — small dependency-free utilities. */
 (function (root, factory) {
   var api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -77,14 +77,14 @@
 
   /** Human date and 12-hour time, local, e.g. "10 Nov 2026, 2:05 PM". */
   function fmtDateTime(ts) {
-    if (ts == null || !isFinite(ts)) return "â€”";
+    if (ts == null || !isFinite(ts)) return "—";
     var d = new Date(ts);
     var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear() + ", " + fmtTime(ts);
   }
 
   function fmtDate(ts) {
-    if (ts == null || !isFinite(ts)) return "â€”";
+    if (ts == null || !isFinite(ts)) return "—";
     var d = new Date(ts);
     var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear();
@@ -125,7 +125,7 @@
 
   /** "12m 04s" style duration for sessions. */
   function fmtDuration(ms) {
-    if (ms == null || ms < 0) return "â€”";
+    if (ms == null || ms < 0) return "—";
     var s = Math.round(ms / 1000);
     var h = Math.floor(s / 3600);
     var m = Math.floor((s % 3600) / 60);
@@ -226,7 +226,7 @@
   /**
    * Split a spotify:mosaic: ref ("spotify:mosaic:<tile>:<tile>[:<tile>:<tile>]")
    * into the https URLs of its tiles. A Spotify mosaic cover IS its tiles laid
-   * out as a 2x2 grid, so the exact artwork needs all of them â€” taking only the
+   * out as a 2x2 grid, so the exact artwork needs all of them — taking only the
    * first tile shows a quarter of a playlist cover. Returns null for anything
    * that is not a mosaic ref.
    */

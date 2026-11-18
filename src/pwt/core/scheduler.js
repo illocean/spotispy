@@ -238,13 +238,21 @@
           // not answer. Counting it is what lets the error back-off engage, so a
           // dead endpoint does not keep polling at the normal cadence.
           if (r.state === "unavailable" || r.state === "error") {
+            var wasClean = activityErrors === 0;
             activityErrors++;
             bus.activityState = r.state;
             bus.activityError = (r.errors && r.errors.join("; ")) || r.error || "activity unavailable";
             if (deps.onActivity) deps.onActivity(r);
             emit();
+            // Engage the error back-off on the first failure (clean -> failing),
+            // the same way the boost cadence re-arms only on a state change.
+            // Without this the already-armed timer keeps polling at the normal
+            // (or boost) interval despite the back-off, because reschedule() is
+            // the only place that reads activityErrors.
+            if (wasClean) reschedule();
             return r;
           }
+          var wasFailing = activityErrors > 0;
           activityErrors = 0;
           bus.lastActivityAt = Date.now();
           bus.activityState = r.state;
@@ -257,6 +265,11 @@
           if (boosting !== activityBoosted) {
             activityBoosted = boosting;
             reschedule();
+          } else if (wasFailing) {
+            // Recovery from the error back-off: the feed answered again, so
+            // return the timer to the normal (or boost) cadence instead of
+            // leaving it stuck at the backed-off interval.
+            reschedule();
           }
           if (r.records) {
             bus.activityRecords = r.records;
@@ -268,6 +281,7 @@
           emit();
           return r;
         } catch (e) {
+          var wasCleanErr = activityErrors === 0;
           activityErrors++;
           bus.activityState = "error";
           bus.activityError = String((e && e.message) || e);
@@ -276,6 +290,9 @@
             pwt.telemetry.captureError("activity.tick", e);
           }
           emit();
+          // A thrown tick is a failed poll too: engage the back-off on the first
+          // failure so a dead feed is not hammered at the normal cadence.
+          if (wasCleanErr) reschedule();
           return { state: "error", error: bus.activityError };
         } finally {
           activityRunning = null;
@@ -300,9 +317,10 @@
         activityMs = Math.min(activityMs, s.activityBoostMs);
       }
       // Re-arm from the current error state, so a failure that arrived after
-      // start() still backs the timer off instead of leaving it at the normal
-      // cadence. reschedule() is the only place that reads activityErrors, and
-      // it is called on the settings path and on demand.
+      // start() backs the timer off instead of leaving it at the normal cadence.
+      // activityTick() calls reschedule() on the first failure (engaging the
+      // back-off) and again on recovery (restoring cadence); the settings path
+      // and start() also call in. activityErrors is only read here.
       if (s.activityMs > 0) {
         timers.activity = setInterval(function () {
           if (typeof navigator !== "undefined" && navigator.onLine === false) return;

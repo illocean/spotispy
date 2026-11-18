@@ -58,6 +58,13 @@
 .pwt-hero-brand { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pwt-hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pwt-hero-meta { color: var(--sp-faint); font-size: 11px; white-space: nowrap; }
+/* The scan-reason rides inside the hero meta line ("3 sources failed — <reason>").
+   It is the why, so it reads a notch quieter than the label but still legible.
+   The line truncates rather than overflowing the header; the full text is always
+   in the title tooltip. */
+.pwt-hero-meta[data-pwt="scan-summary"] { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.pwt-scan-reason { color: var(--sp-sub); }
+.pwt-hero-meta.is-warn .pwt-scan-reason { color: var(--sp-warning); }
 .pwt-wordmark {
   display: inline-flex;
   align-items: center;
@@ -243,6 +250,10 @@ button.pwt-toggle:focus-visible {
 /* ---------- toolbars ---------- */
 .pwt-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pwt-toolbar { display: flex; gap: 10px; align-items: center; margin: 12px var(--sp-page); flex-wrap: wrap; }
+/* Log filter toolbar: the two dropdowns + search + exports wrap onto a second
+   row on a narrow pane instead of overflowing. (.pwt-export keeps its own
+   margin-left:auto, so the export buttons still stay together at the end.) */
+.pwt-toolbar-wrap { row-gap: 8px; }
 .pwt-scan-progress { display: inline-flex; gap: 10px; align-items: center; }
 
 /* ---------- inputs ---------- */
@@ -619,6 +630,9 @@ button.pwt-toggle:focus-visible {
 .pwt-live-track-title { font-weight: 700; }
 .pwt-live-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
 .pwt-live-main .pwt-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The "artist · context" line under the track title in a live card. One line,
+   ellipsised, a shade quieter than the title. */
+.pwt-live-context { color: var(--sp-sub); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-live-card > .pwt-tiny { white-space: nowrap; }
 .pwt-live-state { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; color: var(--sp-green); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 800; }
 /* ---------- session list (activity) ---------- */
