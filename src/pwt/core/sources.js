@@ -67,7 +67,10 @@
   }
 
   /**
-   * A stable identity for a cover ref, for the "cover changed" diff.
+   * A stable identity for a stored cover ref. Some metadata sources omit it,
+   * so callers derive it from the cover URL (the source of truth). For the
+   * "cover changed" DIFF, use `coverImageId` instead: this raw hash changes
+   * with the image resolution, which made the same picture look edited.
    *
    * One definition, used by every source: `sources.js` used to derive it three
    * different ways, so the same artwork produced three different hashes and a
@@ -78,6 +81,63 @@
   function coverHashOf(cover) {
     if (!cover) return "";
     return String(cover).split("/").pop().split("?")[0];
+  }
+
+  /**
+   * A SIZE-INDEPENDENT, SHAPE-AWARE identity for a cover, for the "cover
+   * changed" diff. Returns a typed string:
+   *   "image:<id>"   — a single image (spotify:image ref or i.scdn.co URL)
+   *   "mosaic:<tiles>" — a spotify:mosaic 2x2, tiles sorted so order is moot
+   *   ""             — no cover
+   *
+   * `coverHashOf` returns the whole last URL segment, but Spotify serves the
+   * SAME artwork at several resolutions under different URLs:
+   *   .../ab67616d0000b273<hex>  (64)
+   *   .../ab67616d0000c4cb<hex>  (300)
+   *   .../ab67616d0000d4c2<hex>  (640)
+   * `bestCover` picks the largest the source happened to return, and that can
+   * differ between scans (a metadata-source switch, a partial array). The raw
+   * hash then changes for an image that did not, and `evaluate` logged a
+   * "cover changed" whose before and after were the same picture. Strip the
+   * `ab67616d0000` + 4-char size prefix so every resolution of one image
+   * compares equal. The leading kind tag keeps a mosaic from ever colliding
+   * with a single image id.
+   */
+  function coverImageId(cover) {
+    if (!cover) return "";
+    var s = String(cover);
+    // A mosaic IS its tiles; sort them so a tile reordering is not a change.
+    if (s.indexOf("spotify:mosaic:") === 0) {
+      var tiles = s.slice("spotify:mosaic:".length).split(":").filter(function (t) {
+        return /^[A-Za-z0-9]{8,}$/.test(t);
+      });
+      return "mosaic:" + tiles.slice().sort().join(",");
+    }
+    // Normalize a spotify:image:<hash> ref to its bare hash, so a scan that
+    // carried a ref and one that carried the resolved URL compare equal.
+    var ref = /^spotify:image:([A-Za-z0-9]+)/.exec(s);
+    if (ref) s = ref[1];
+    var h = s.split("/").pop().split("?")[0];
+    var m = /^ab67616d0000(.{4})(.+)$/.exec(h);
+    return "image:" + (m ? m[2] : h);
+  }
+
+  /**
+   * True iff one cover genuinely differs from another — the one honest test the
+   * "cover changed" diff uses. Both must be present; if either is empty it is
+   * a first fill or a missing read, not a change. A different SHAPE (mosaic vs
+   * single image) is a source-route switch, not an artwork edit — a real edit is
+   * delivered in the same shape the source uses — so it is not a change. Same
+   * shape: a change iff the size-independent ids differ.
+   */
+  function coverChanged(from, to) {
+    var a = coverImageId(from);
+    var b = coverImageId(to);
+    if (!a || !b) return false;
+    var ka = a.slice(0, a.indexOf(":"));
+    var kb = b.slice(0, b.indexOf(":"));
+    if (ka !== kb) return false; // shape transition: cannot compare honestly
+    return a !== b;
   }
 
   /**
@@ -613,5 +673,8 @@
     // Shared so every route picks a cover the same way instead of guessing at
     // the array's order (see the profile view, which also uses it).
     bestCover: bestCover,
+    coverHashOf: coverHashOf,
+    coverImageId: coverImageId,
+    coverChanged: coverChanged,
   };
 });

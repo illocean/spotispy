@@ -45,7 +45,7 @@
           { class: "pwt-view-head" },
           h("div", { class: "pwt-hero-brand" }, h("span", { class: "pwt-wordmark" }, "roster"), h("h1", { class: "pwt-h1" }, "Profiles"))
         ),
-        h(kit.Empty, { title: "Loading…", hint: "Reading the roster from local storage." })
+        h(kit.Empty, { class: "pwt-loading", title: "Loading…", hint: "Reading the roster from local storage." })
       );
     }
 

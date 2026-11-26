@@ -362,6 +362,12 @@
               if (!freshRow || freshRow[field]) return false;
               var patch = {};
               patch[field] = url;
+              // A playlist cover hash is derived from its URL; store both so the
+              // next scan does not see a stale hash against a fresh URL and log a
+              // phantom "cover changed" for an image that did not change.
+              if (gap.kind === "playlist" && pwt.sources && pwt.sources.coverHashOf) {
+                patch.coverHash = pwt.sources.coverHashOf(url);
+              }
               await db.put(storeName, Object.assign({}, freshRow, patch));
               return true;
             } catch (e9) {

@@ -115,9 +115,9 @@ test("retainDays 0 means 'keep forever' and is not silently reverted", () => {
     // A stored string or an unlisted number must fall back to the default
     // rather than disabling retention or throwing.
     c.set({ retainDays: -1 });
-    assert.equal(c.get().retainDays, 90, "a negative window falls back to the default");
+    assert.equal(c.get().retainDays, 7, "a negative window falls back to the default");
     c.set({ retainDays: 7 });
-    assert.equal(c.get().retainDays, 90, "an unlisted window falls back too");
+    assert.equal(c.get().retainDays, 7, "a listed window is accepted");
   } finally {
     c.restore();
   }

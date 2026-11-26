@@ -863,6 +863,63 @@ test("bestCover falls back to label when no width is declared", () => {
   assert.equal(sources.bestCover([xl, s]), "xl", "and still wins when it comes first");
 });
 
+test("coverImageId is size- and shape-aware for Spotify covers", () => {
+  const id = sources.coverImageId;
+  // Same artwork at different resolutions: identical typed id.
+  assert.equal(
+    id("https://i.scdn.co/image/ab67616d0000b273ABCDEF"),
+    id("https://i.scdn.co/image/ab67616d0000d4c2ABCDEF"),
+    "64px and 640px of one image share an identity"
+  );
+  assert.equal(
+    id("spotify:image:ab67616d0000b273ABCDEF"),
+    id("https://i.scdn.co/image/ab67616d0000d4c2ABCDEF"),
+    "a spotify:image ref and the resolved URL agree"
+  );
+  // A different image is a different identity.
+  assert.notEqual(
+    id("https://i.scdn.co/image/ab67616d0000b273ABCDEF"),
+    id("https://i.scdn.co/image/ab67616d0000b273ZZZZZZ"),
+    "a different image is a different identity"
+  );
+  // Non-Spotify shapes still get an image id (tagged, never bare).
+  assert.equal(id("https://i.scdn.co/image/oldcover"), "image:oldcover");
+  assert.equal(id(""), "");
+  // Mosaics are their tiles, order-independent, tagged apart from single images.
+  assert.equal(
+    id("spotify:mosaic:aaaa1111:bbbb2222"),
+    id("spotify:mosaic:bbbb2222:aaaa1111"),
+    "tile order does not change a mosaic's identity"
+  );
+  assert.notEqual(
+    id("spotify:mosaic:aaaa1111:bbbb2222"),
+    id("spotify:image:aaaa1111"),
+    "a mosaic and a single image never share an id"
+  );
+});
+
+test("coverChanged is honest about size, shape and presence", () => {
+  const cc = sources.coverChanged;
+  const hi = "https://i.scdn.co/image/ab67616d0000b273ABCDEF";
+  const lo = "https://i.scdn.co/image/ab67616d0000d4c2ABCDEF";
+  // A resolution flip is not a change.
+  assert.equal(cc(hi, lo), false, "size flip is not a change");
+  // A genuine edit (same shape, different id) is a change.
+  assert.equal(cc(hi, "https://i.scdn.co/image/ab67616d0000b273ZZZZZZ"), true, "a real edit is a change");
+  // A mosaic↔single shape switch is not a change (source-route switch).
+  assert.equal(cc(hi, "spotify:mosaic:aaaa1111:bbbb2222"), false, "shape switch is not a change");
+  // Two different mosaics are a change.
+  assert.equal(
+    cc("spotify:mosaic:aaaa1111:bbbb2222", "spotify:mosaic:cccc3333:dddd4444"),
+    true,
+    "two different mosaics are a change"
+  );
+  // A first fill or a missing read is not a change.
+  assert.equal(cc("", hi), false, "a first fill is not a change");
+  assert.equal(cc(hi, ""), false, "a missing read is not a change");
+  assert.equal(cc("", ""), false, "neither present is not a change");
+});
+
 test("clientMeta picks the largest cover instead of a fixed array end", () => {
   // The route used to take images[images.length - 1]. With images ordered
   // largest-first (as the Web API does) that picked the SMALLEST cover.

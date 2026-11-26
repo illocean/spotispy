@@ -77,7 +77,7 @@
     var setSelected = selState[1];
 
     if (!data) {
-      return h("div", { class: "pwt-view" }, h("h1", { class: "pwt-h1" }, "Spotispy"), h("p", { class: "pwt-muted" }, "Loading…"));
+      return h("div", { class: "pwt-view" }, h("h1", { class: "pwt-h1" }, "Spotispy"), h(kit.Loading, { label: "Loading…" }));
     }
     var dash = root.PWT.view.userDashboard(data, selected, Date.now());
     var scanState = dash.scan || scan || {};
@@ -89,7 +89,7 @@
     var progress = scanState.scanning
       ? h(
           "div",
-          { class: "pwt-scan-progress" },
+          { class: "pwt-scan-progress is-scanning" },
           h(kit.Progress, {
             done: scanState.done || 0,
             total: scanState.total || 0,
@@ -369,6 +369,7 @@
             return h(
               "div",
               { class: "pwt-user-card" + (isScanning ? " is-scanning" : ""), key: pl.id || pl.uri, "data-playlist": pl.id },
+              isScanning ? h("span", { class: "pwt-scan-sheen", "aria-hidden": "true" }) : null,
               h(
                 "button",
                 {

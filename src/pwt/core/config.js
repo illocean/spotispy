@@ -24,7 +24,7 @@
     // Follower/following lists sit behind a capability probe; the toggle is
     // only a user preference and must survive a reload like every other flag.
     followers: true,
-    retainDays: 90,
+    retainDays: 7,
     logCap: 10000,
   };
 
@@ -38,7 +38,7 @@
     activityBoostMs: [1000, 2000, 5000, 10000, 30000],
     // Retention in days. 0 means "never prune"; a stored string or negative
     // must fall back to the default rather than silently disabling the feature.
-    retainDays: [0, 30, 90, 180, 365],
+    retainDays: [0, 7, 30, 90, 180, 365],
   };
 
   function storage() {

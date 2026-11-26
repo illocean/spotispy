@@ -377,6 +377,32 @@
       }
     }
 
+    // Hold the boot splash on screen for a short floor even after the first load
+    // resolves, so the branded cold-start paint is always perceived instead of
+    // flashing for <1 frame on a warm cache. This is purely presentational:
+    // `model.ready` flips synchronously (so load/seq semantics are untouched),
+    // and the render layer keeps showing the splash until `bootFloorRef` flips
+    // true via a one-shot timer armed on mount (cleared on unmount).
+    // 220ms matches --pwt-dur-slow so the wordmark's fade-in completes before
+    // hand-off instead of being cut mid-fade on a fast first load.
+    var BOOT_SPLASH_MS = 220;
+    var bootFloorRef = useRef(false);
+    var bootTimerRef = useRef(null);
+    useEffect(
+      function () {
+        bootTimerRef.current = setTimeout(function () {
+          bootFloorRef.current = true;
+          setModel(function (m) {
+            return Object.assign({}, m);
+          });
+        }, BOOT_SPLASH_MS);
+        return function () {
+          if (bootTimerRef.current != null) clearTimeout(bootTimerRef.current);
+        };
+      },
+      []
+    );
+
     async function load(routeName, extra) {
       // Claim this load's place in line. Anything still running under an older
       // token is stale and must not publish (see the guard before setModel).
@@ -597,7 +623,9 @@
           out.vm = { dashboard: out.dashboard };
           out.liveNow = liveNowIds();
           if (routeName === "log") {
-            out.rows = vm.filterChanges(recent || [], filterRef.current.query, filterRef.current.kind, filterRef.current.level);
+            // Keep the full set here; Log filters in memory on each keystroke so
+            // typing in the search box never re-reads the database.
+            out.rows = recent || [];
           }
         }
         if (routeName === "profiles") {
@@ -1166,6 +1194,7 @@
       };
     }, []);
 
+    var progressTimerRef = useRef(null);
     useEffect(
       function () {
         load(route, { selected: selectedRef.current, playlistId: playlistIdRef.current });
@@ -1173,9 +1202,16 @@
         if (P.boot && P.boot.isBooted()) {
           unsub = P.boot.instance().scheduler.on(function (bus) {
             try {
-              setModel(function (m) {
-                return Object.assign({}, m, { scan: busSnapshot(), liveNow: liveNowIds() });
-              });
+              // Progress emits once per scanned target. Coalesce those into one
+              // render per task: the views only need the latest snapshot.
+              if (progressTimerRef.current == null) {
+                progressTimerRef.current = setTimeout(function () {
+                  progressTimerRef.current = null;
+                  setModel(function (m) {
+                    return Object.assign({}, m, { scan: busSnapshot(), liveNow: liveNowIds() });
+                  });
+                }, 0);
+              }
               // Reload when a scan completes, a crash surfaces, OR an activity
               // tick records new data. Activity ticks are frequent (10-60s), so
               // the reload is gated on lastActivityAt to avoid reloading on
@@ -1208,6 +1244,10 @@
         }
         return function () {
           if (unsub) unsub();
+          if (progressTimerRef.current != null) {
+            clearTimeout(progressTimerRef.current);
+            progressTimerRef.current = null;
+          }
         };
       },
       [route, routeEpoch]
@@ -1235,11 +1275,11 @@
         if (root.document && root.document.visibilityState === "visible") {
           timer = setInterval(function () {
             ticks++;
-            if (ticks % 5 === 0) {
-              // Every 5s: full reload to pick up any sessions written since
+            if (ticks % 30 === 0) {
+              // Every 30s: full reload to pick up any sessions written since
               // the last load. This is the safety net for when the bus listener's
-              // load() call was dropped by the seq guard (a concurrent load was
-              // already in flight when the activity tick fired).
+              // load() call was dropped by the seq guard. The other seconds only
+              // refresh `now` so durations tick without re-reading the DB.
               load(routeRef.current, { selected: selectedRef.current, playlistId: playlistIdRef.current });
             } else {
               // Every 1s: just update `now` so durations tick.
@@ -1282,6 +1322,23 @@
       },
       []
     );
+
+    // Startup: the very first paint, before the first model load resolves.
+    // A branded boot splash — the wordmark with a seamless sweeping underline —
+    // so the app opens with one authored moment instead of a bare "Loading…"
+    // under the nav. It is held for a short floor even once the first load
+    // publishes (bootFloorRef), so the cold-start paint is always perceived,
+    // then hands off to the App shell (and its route entrance). Reduced-motion
+    // collapses the sweep to a static underline (see style.css).
+    if (!model.ready || !bootFloorRef.current) {
+      return h(
+        "div",
+        { class: "pwt-boot", role: "status", "aria-live": "polite" },
+        h("span", { class: "pwt-wordmark" }, "spotispy"),
+        h("span", { class: "pwt-boot-bar", "aria-hidden": "true" }, h("span", { class: "pwt-boot-bar-fill" })),
+        h("span", { class: "pwt-boot-note" }, "Waking up…")
+      );
+    }
 
     var uiProps = Object.assign({}, model, props, {
       route: route,
@@ -1332,14 +1389,6 @@
           });
       }),
       onOpenTrack: function (uri) {
-        try {
-          if (root.Spicetify && root.Spicetify.Platform && root.Spicetify.Platform.PlaylistAPI && /^spotify:track:/.test(uri)) {
-            root.Spicetify.Player.playUri(uri);
-            return;
-          }
-        } catch (e) {
-          /* fall through to navigation */
-        }
         openExternal(uri);
       },
       onOpen: function (uri) {
@@ -1403,15 +1452,19 @@
           setActivityFilter(activityFilterRef.current);
           return;
         }
+        // Log and overview filter their already-loaded rows in memory; no
+        // database reload on a keystroke.
         filterRef.current = Object.assign({}, filterRef.current, next);
         setFilter(filterRef.current);
-        load(routeRef.current, { selected: selectedRef.current });
       },
       onExport: guard("export", function (format) {
         // The log exports what is on screen (filters applied), so the filename
         // says so: a filtered 1-row export must not look like a full log dump.
-        var rows = model.rows || (model.vm && model.vm.recent) || [];
         var f = filterRef.current || {};
+        var rows = P.view.filterChanges(
+          model.rows || (model.vm && model.vm.recent) || [],
+          f.query, f.kind, f.level
+        );
         var suffix = [f.kind, f.level, f.query ? "q" : ""].filter(Boolean).join("-");
         var base = "spotispy-log" + (suffix ? "-" + suffix : "");
         if (format === "csv") P.export.download(P.export.filename(base, "csv"), "text/csv", P.export.toCsv(rows));

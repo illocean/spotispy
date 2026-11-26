@@ -125,38 +125,43 @@
     var known = plan.knownKeys || {};
     var i;
 
-    // The guard has to see what is already in the log, not just what this plan
-    // declared: the scanners never pass knownKeys, so a re-emitted row would
-    // write no duplicate (the store is keyed) yet still bump the day bucket.
+    // Rows sharing a key are one logical change; this plan-local set collapses
+    // them so a re-scan neither duplicates the row nor double-counts the bucket.
+    // Already-logged rows are checked by keyed read below — loading the entire
+    // log here cost hundreds of ms on every commit (the log holds up to 10k).
     var logged = {};
     var ops = null;
     var touched = null;
     var keys = null;
 
-    // One serialised step. The guard read, the aggregate read, both increments
+    // One serialised step. The guard reads, the aggregate read, both increments
     // and both writes all happen inside the chain: the guard must be inside it
     // too, or two concurrent commits both observe a row as unlogged and both
     // count it. See aggChain.
     var step = function () {
-      return db()
-        .getAll("changes")
-        .then(function (existing) {
-          for (var e = 0; e < existing.length; e++) logged[existing[e].key] = true;
-        })
+      // Collapse duplicate keys within this plan first, then ask the store which
+      // of those keys are new. Keyed reads are O(rows in this plan), not O(log).
+      var candidates = [];
+      var planKeys = [];
+      for (i = 0; i < rowsIn.length; i++) {
+        var key = logKey(rowsIn[i]);
+        if (known[key] || logged[key]) continue;
+        logged[key] = true;
+        candidates.push(rowsIn[i]);
+        planKeys.push(key);
+      }
+      var rows = [];
+      var check = function (idx) {
+        if (idx >= planKeys.length) return Promise.resolve(null);
+        return db()
+          .get("changes", planKeys[idx])
+          .then(function (existing) {
+            if (!existing) rows.push(candidates[idx]);
+            return check(idx + 1);
+          });
+      };
+      return check(0)
         .then(function () {
-          // Rows sharing a key are one logical change: collapse them so a
-          // re-scan neither duplicates the row nor double-counts the aggregate.
-          var rows = [];
-          for (i = 0; i < rowsIn.length; i++) {
-            var key = logKey(rowsIn[i]);
-            // A row already in the log is not counted again: the `changes` store
-            // is keyed, so the write is idempotent, but the aggregate increment
-            // is not. Re-emitting an identical row must not inflate the bucket.
-            if (known[key] || logged[key]) continue;
-            logged[key] = true;
-            rows.push(rowsIn[i]);
-          }
-
           ops = putOps(puts).concat(delOps(dels));
           touched = {};
 
@@ -247,27 +252,28 @@
   function recentChanges(limit, target, kind, bucket) {
     var take = limit || 200;
     if (target) {
+      // Walking the `ts` index newest-first stops after `take` MATCHES, instead
+      // of materialising the whole target index (up to 50k rows) and sorting it
+      // in JS. The index is already ts-ordered, so no re-sort is needed.
       return db()
-        .range("changes", "target", target, { limit: 50000 })
+        .countIndex("changes", "target", target)
+        .then(function (n) {
+          if (!n) return [];
+          return db().rangeWhere(
+            "changes",
+            "ts",
+            undefined,
+            function (r) {
+              if (!r || r.target !== target) return false;
+              if (bucket && r.bucket !== bucket) return false;
+              if (kind && r.kind !== kind) return false;
+              return true;
+            },
+            { direction: "prev", limit: take }
+          );
+        })
         .then(function (rows) {
-          // Filter the bucket on the RECORD: toRow() strips `bucket`, so a
-          // filter applied after toRow() could never match.
-          var kept = bucket
-            ? rows.filter(function (r) {
-                return r.bucket === bucket;
-              })
-            : rows;
-          // Filter the kind BEFORE slicing, for the same reason the `ts` branch
-          // below does: a slice first would drop older matching rows behind
-          // newer rows of another kind.
-          return applyKind(kept.map(toRow), kind)
-            .filter(function (x) {
-              return x.target === target;
-            })
-            .sort(function (a, b) {
-              return b.ts - a.ts;
-            })
-            .slice(0, take);
+          return rows.map(toRow);
         });
     }
     // Read newest-first and apply the bucket/kind filters BEFORE slicing:

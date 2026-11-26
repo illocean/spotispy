@@ -280,6 +280,41 @@
     });
   }
 
+  /**
+   * Walk an index in order, keeping only rows the predicate accepts, and stop
+   * as soon as `limit` matches are found. Callers that want the newest N rows
+   * for a non-index-sorted field (a target inside the `ts` index, say) use this
+   * instead of loading the entire index into memory and sorting it.
+   * @param {object} opts { direction: 'next'|'prev', limit: number }
+   */
+  function rangeWhere(store, index, r, accept, opts) {
+    opts = opts || {};
+    return tx(store, "readonly", function (t) {
+      var src = index ? t.objectStore(store).index(index) : t.objectStore(store);
+      var cur = src.openCursor(r, opts.direction || "next");
+      var out = [];
+      var limit = opts.limit || Infinity;
+      return new Promise(function (resolve) {
+        cur.onsuccess = function () {
+          var cursor = cur.result;
+          if (!cursor) {
+            resolve(out);
+            return;
+          }
+          var value = cursor.value;
+          if (accept(value)) {
+            out.push(value);
+            if (out.length >= limit) {
+              resolve(out);
+              return;
+            }
+          }
+          cursor.continue();
+        };
+      });
+    });
+  }
+
   /** Write many rows of several stores in ONE transaction (atomic commit). */
   function batch(ops) {
     var stores = [];
@@ -463,6 +498,7 @@
     count: count,
     countIndex: countIndex,
     range: range,
+    rangeWhere: rangeWhere,
     batch: batch,
     pruneOlderThan: pruneOlderThan,
     purgeActivity: purgeActivity,

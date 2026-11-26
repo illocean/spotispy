@@ -248,6 +248,8 @@ test("activity renders user pictures and track art", async () => {
 test("activity renders sessions as grouped, filterable rows and no Top contexts", async () => {
   const { P, win } = state;
   const now = Date.now();
+  const today = new Date(now);
+  const twoDaysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 2, 12, 0, 0, 0).getTime();
   const mkCard = (id, userId, userName, startedAt) => ({
     id: id,
     userId: userId,
@@ -264,8 +266,8 @@ test("activity renders sessions as grouped, filterable rows and no Top contexts"
   });
   const cards = [
     mkCard("sess-a", "fixture-aaa", "Ari", now),
-    mkCard("sess-b", "fixture-bbb", "Bo", now - 2 * 86400000),
-    mkCard("sess-c", "fixture-aaa", "Ari", now - 2 * 86400000 - 3600000),
+    mkCard("sess-b", "fixture-bbb", "Bo", twoDaysAgo),
+    mkCard("sess-c", "fixture-aaa", "Ari", twoDaysAgo - 3600000),
   ];
   const base = {
     state: "ok",
@@ -308,6 +310,53 @@ test("the change log renders images and dates", async () => {
   assert.ok(html.indexOf("Change log") >= 0, "heading");
   assert.ok(html.indexOf("pwt-log-thumb") >= 0, "image column");
   assert.ok(/\d{1,2} \w{3} \d{4}/.test(html), "dates");
+});
+
+test("the change log renders image changes as preview images", async () => {
+  const { P, win } = state;
+  const html = await render(P, win, P.ui.Log, {
+    rows: [
+      {
+        kind: "profile.playlist.cover.changed",
+        target: PLAYLIST_ID,
+        targetName: "Night Drive",
+        ts: state.fx.T0,
+        extra: { from: "h1", to: "h2", fromUrl: ART.cover + "?v=1", toUrl: ART.cover + "?v=2" },
+      },
+      {
+        kind: "profile.avatar.changed",
+        target: "profile-1",
+        targetName: "Ada",
+        ts: state.fx.T0,
+        extra: { from: "a1", to: "a2", fromUrl: ART.avatarFriend + "?a=1", toUrl: ART.avatarFriend + "?a=2" },
+      },
+      {
+        kind: "cover.changed",
+        target: PLAYLIST_ID,
+        targetName: "Night Drive",
+        ts: state.fx.T0,
+        extra: { from: "g1", to: "g2", fromUrl: ART.cover + "?g=1", toUrl: ART.cover + "?g=2" },
+      },
+      {
+        kind: "profile.playlist.cover.changed",
+        target: PLAYLIST_ID,
+        targetName: "Night Drive",
+        ts: state.fx.T0,
+        extra: { from: "old1", to: "old2" },
+      },
+    ],
+    filter: { query: "", kind: "", level: "" },
+    onFilter: function () {},
+  });
+  const previews = html.match(/class="pwt-image-change"/g) || [];
+  assert.equal(previews.length, 3, "cover, generic cover, and avatar previews");
+  assert.equal((html.match(/aria-label="before"/g) || []).length, 3, "before previews");
+  assert.equal((html.match(/aria-label="after"/g) || []).length, 3, "after previews");
+  assert.ok(html.indexOf("?v=1") >= 0 && html.indexOf("?v=2") >= 0, "cover image URLs");
+  assert.ok(html.indexOf("?g=1") >= 0 && html.indexOf("?g=2") >= 0, "generic cover image URLs");
+  assert.ok(html.indexOf("?a=1") >= 0 && html.indexOf("?a=2") >= 0, "avatar image URLs");
+  assert.ok(html.indexOf("new cover") >= 0, "old rows keep readable text");
+  assert.ok(html.indexOf("h1 → h2") < 0 && html.indexOf("a1 → a2") < 0, "hash text is replaced by previews");
 });
 
 test("settings renders the diagnostics panel", async () => {
@@ -425,13 +474,32 @@ test("a slow load that finishes after a route change cannot repopulate the old r
       return gate.then(function () { return realChanges.apply(P.store, args); });
     };
 
+    // First mount: let the blocked log load resolve so the boot splash hands off
+    // and the shell appears.
     P.react.mount(el, P.ui.AppController, { route: "log" });
+    release();
     await waitFor(function () { return el.querySelector('[data-pwt-nav="overview"]'); }, "the nav bar");
+
+    // Now arm a SECOND in-flight log load: navigating to overview while it is
+    // still pending must not let its eventual publish repopulate the old route.
+    let release2;
+    const gate2 = new Promise(function (r) { release2 = r; });
+    P.store.recentChanges = function () {
+      const args = arguments;
+      return gate2.then(function () { return realChanges.apply(P.store, args); });
+    };
+    // Re-enter log to start a fresh load that blocks on gate2.
+    win.Spicetify.Platform.History.push({ pathname: "/Spotispy/log", state: { route: "log" } });
+    el.querySelector('[data-pwt-nav="log"]').click();
+    await waitFor(function () { return lastProps && lastProps.route === "log" && /Loading…/.test(el.textContent); }, "the second log load in flight");
+
     el.querySelector('[data-pwt-nav="overview"]').click();
     await waitFor(function () { return lastProps && lastProps.route === "overview"; }, "the overview route");
     const rowsBefore = lastProps.rows;
 
-    release();
+    // The abandoned log load resumes; publishing must be refused so it cannot
+    // push the old route's rows into the overview.
+    release2();
     await new Promise(function (r) { setTimeout(r, 200); });
 
     assert.equal(lastProps.route, "overview", "the route is still the overview");

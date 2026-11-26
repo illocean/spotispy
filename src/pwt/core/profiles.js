@@ -192,10 +192,15 @@
             target: id,
             kind: kind,
             title: next.name || "",
-            // An image change (avatar) carries no before/after — a hash pair is
-            // noise, not a name. Every other scalar keeps "field: from → to".
+            // An image change (avatar) stores its before/after URLs for previews.
             detail: f.field === "avatarHash" ? "avatar changed" : f.field + ": " + (f.from == null ? "—" : f.from) + " → " + (f.to == null ? "—" : f.to),
-            extra: { field: f.field, from: f.from, to: f.to },
+            extra: {
+              field: f.field,
+              from: f.from,
+              to: f.to,
+              fromUrl: f.field === "avatarHash" ? (prev && prev.avatarUrl) || "" : "",
+              toUrl: f.field === "avatarHash" ? next.avatarUrl || "" : "",
+            },
           },
           now
         )
@@ -259,7 +264,19 @@
           )
         );
       }
-      if (old.cover && cur.cover && old.cover !== cur.cover) {
+      // A cover change here (profile-view playlist artwork) is the same
+      // observable edit the playlist scan logs. Compare size- and shape-
+      // independently so a resolution flip or a mosaic↔single switch is not a
+      // phantom, and only fire on a genuine change.
+      var pid = P();
+      var oldCover = old.cover || "";
+      var curCover = cur.cover || "";
+      // Without the sources helper a size/shape-aware comparison is impossible;
+      // emit nothing rather than risk a phantom (production always has sources).
+      var changed = pid.sources && pid.sources.coverChanged
+        ? pid.sources.coverChanged(oldCover, curCover)
+        : false;
+      if (changed) {
         events.push(
           ev.makeEvent(
             {
@@ -269,7 +286,7 @@
               uri: cur.uri,
               title: next.name || "",
               detail: cur.name || cur.uri,
-              extra: { from: old.cover, to: cur.cover },
+              extra: { from: oldCover, to: curCover, fromUrl: oldCover, toUrl: curCover },
             },
             now
           )

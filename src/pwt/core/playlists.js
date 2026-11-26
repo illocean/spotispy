@@ -411,6 +411,20 @@
     var title = (meta && meta.name) || row.name || "Untitled playlist";
     var events = [];
 
+    // The cover hash is a pure function of the cover URL (sources.coverHashOf).
+    // Some metadata sources (embed, pathfinder) and the art gap-fill write a
+    // coverUrl WITHOUT a hash, leaving a stored hash that lags its URL. A later
+    // scan that finally carried a hash then diffed it against the stale value and
+    // logged "cover changed" while fromUrl === toUrl — the same image. Heal the
+    // stored side from its URL (the source of truth) and fill a missing meta hash
+    // from its URL, so the diff compares covers honestly: a cover changed iff its
+    // URL changed.
+    var hashOf = pwt.sources && pwt.sources.coverHashOf
+      ? pwt.sources.coverHashOf
+      : function (u) { return String(u == null ? "" : u).split("/").pop().split("?")[0]; };
+    if (row && row.coverUrl) row.coverHash = hashOf(row.coverUrl);
+    if (meta && meta.coverUrl && !meta.coverHash) meta.coverHash = hashOf(meta.coverUrl);
+
     var plan = diff.planTrackDiff(snapshot, fresh);
     var snapshotRow = {
       playlistId: id,
@@ -488,8 +502,8 @@
       }
     }
 
-    // Metadata edits (name / cover / description) are per-playlist changes.
-    var fields = diff.diffScalars(row, meta || {}, ["name", "coverHash", "description"], { ignoreNull: ["coverHash", "description", "name"] });
+    // Metadata edits (name / description) are per-playlist changes.
+    var fields = diff.diffScalars(row, meta || {}, ["name", "description"], { ignoreNull: ["description", "name"] });
     for (var f = 0; f < fields.length; f++) {
       var c = fields[f];
       events.push(
@@ -497,15 +511,52 @@
           {
             level: "playlist",
             target: id,
-            kind: c.field === "coverHash" ? "profile.playlist.cover.changed" : c.field === "name" ? "profile.playlist.renamed" : "playlist.meta.changed",
+            kind: c.field === "name" ? "profile.playlist.renamed" : "playlist.meta.changed",
             title: title,
-            // A cover is an image: no before/after hash pair, just the fact.
-            detail: c.field === "coverHash" ? "cover changed" : c.field + ": " + (c.from == null ? "—" : c.from) + " → " + (c.to == null ? "—" : c.to),
+            detail: c.field + ": " + (c.from == null ? "—" : c.from) + " → " + (c.to == null ? "—" : c.to),
             extra: { field: c.field, from: c.from, to: c.to },
           },
           now
         )
       );
+    }
+
+    // Cover changes ARE a real, observable edit, so they are logged — but only
+    // when the artwork genuinely differs. Comparing the raw URL hash reported a
+    // "cover changed" for the SAME picture whenever `bestCover` flipped between
+    // resolutions across scans (.../ab67616d0000b273… vs .../ab67616d0000d4c2…),
+    // or when a metadata source supplied a cover without a hash, or when a
+    // mosaic ref and a single URL represented one artwork. `coverChanged`
+    // compares size- and shape-independently, so the event fires only on a real
+    // edit; a first fill (no prior cover), a missing read, or a shape switch is
+    // not a change.
+    if (meta) {
+      // Without the sources helper we cannot compare size/shape-independently, so
+      // we cannot tell a real edit from a resolution flip; emit nothing rather
+      // than risk a phantom. In production sources is always loaded (it is in
+      // index.js's FILES and registers PWT.sources at load).
+      var changed = pwt.sources && pwt.sources.coverChanged
+        ? pwt.sources.coverChanged(row.coverUrl || "", meta.coverUrl || "")
+        : false;
+      if (changed) {
+        var fromCover = row.coverUrl || "";
+        var toCover = meta.coverUrl || "";
+        events.push(
+          ev.makeEvent(
+            {
+              level: "playlist",
+              target: id,
+              kind: "profile.playlist.cover.changed",
+              title: title,
+              detail: "cover changed",
+              // Real before/after URLs so the row can preview the old and new
+              // artwork side by side (see kit.ImageChange / Log.js).
+              extra: { from: fromCover, to: toCover, fromUrl: fromCover, toUrl: toCover },
+            },
+            now
+          )
+        );
+      }
     }
 
     var playlistRow = Object.assign({}, row, {
@@ -606,9 +657,14 @@
         try {
           var metaOnError = await fetchMeta(w.id);
           if (metaOnError && (metaOnError.name || metaOnError.coverUrl)) {
+            // Keep the cover hash in step with whatever cover URL wins here, so a
+            // row written on the failure path cannot carry a hash that lags its
+            // URL and trigger a phantom "cover changed" on the next clean scan.
+            var errCoverUrl = metaOnError.coverUrl || row.coverUrl;
             row = Object.assign({}, row, {
               name: metaOnError.name || row.name,
-              coverUrl: metaOnError.coverUrl || row.coverUrl,
+              coverUrl: errCoverUrl,
+              coverHash: errCoverUrl ? pwt.sources.coverHashOf(errCoverUrl) : row.coverHash,
               ownerId: String(metaOnError.owner || row.ownerId || "").replace(/^spotify:user:/, ""),
               // Carry the failure bookkeeping into the same row, or this second
               // write clobbers the one commit above (stale failures/lastError).

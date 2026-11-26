@@ -77,7 +77,7 @@
         "div",
         { class: "pwt-view pwt-activity" },
         h("h1", { class: "pwt-h1" }, "Activity"),
-        h(kit.Empty, { title: "Loading…", hint: "Reading the listening feed." })
+        h(kit.Empty, { class: "pwt-loading", title: "Loading…", hint: "Reading the listening feed." })
       );
     }
 

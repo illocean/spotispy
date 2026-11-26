@@ -306,7 +306,10 @@
       { class: "pwt-app" },
       h(NavBar, props),
       ribbons.length ? ribbons : null,
-      safeBody
+      // Keyed by route so the body remounts on navigation and replays one quiet
+      // entrance — the single continuity moment for an Operate surface. The
+      // reduced-motion path collapses it to a short fade (see style.css).
+      h("div", { class: "pwt-route", key: route }, safeBody)
     );
   }
 

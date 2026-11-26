@@ -336,6 +336,25 @@ test("the activity route falls back to the watched profile name when the feed an
   el.remove();
 });
 
+test("the boot splash shows on the first paint, then hands off to the shell", async () => {
+  const { P, win } = state;
+  win.Spicetify.Platform.History.reset();
+  const el = mountController("overview");
+  // The controller holds `ready` for a short floor so the splash is always
+  // perceived: right after the first commit (well within the floor) the boot
+  // splash is on screen, not the shell.
+  await waitFor(function () { return el.querySelector(".pwt-boot"); }, "the boot splash to paint", 150);
+  assert.ok(el.querySelector(".pwt-boot-bar-fill"), "the sweeping bar is present");
+  assert.ok(/Waking up…/.test(el.textContent), "the splash note is shown");
+  assert.ok(!el.querySelector(".pwt-navbar"), "the shell is not shown yet");
+  // It hands off to the shell once the first load publishes.
+  await waitFor(function () { return el.querySelector(".pwt-overview"); }, "the overview after the splash");
+  assert.ok(el.querySelector(".pwt-navbar"), "the shell nav appears after hand-off");
+  assert.ok(!el.querySelector(".pwt-boot"), "the boot splash is gone after hand-off");
+  try { el._pwtRoot.unmount(); } catch (e) { /* already gone */ }
+  el.remove();
+});
+
 test("revisiting the current route reloads it instead of stuck on Loading", async () => {
   const { P, win } = state;
   win.Spicetify.Platform.History.reset();

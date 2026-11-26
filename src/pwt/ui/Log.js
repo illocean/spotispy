@@ -11,8 +11,10 @@
     var kit = root.PWT.uiKit;
     var h = root.PWT.react.h;
     var u = root.PWT.util;
-    var rows = props.rows || [];
     var filter = props.filter || { query: "", kind: "", level: "" };
+    // Filter the loaded rows in memory: the controller keeps the full set, so
+    // every keystroke is a render, not a database round-trip.
+    var rows = root.PWT.view.filterChanges(props.rows || [], filter.query, filter.kind, filter.level);
     // While the route loads, "0 events" would be a lie about an unread log.
     if (props.loading && !props.rows) {
       return h(
@@ -23,12 +25,12 @@
           { class: "pwt-view-head" },
           h("div", { class: "pwt-hero-brand" }, h("span", { class: "pwt-wordmark" }, "logbook"), h("h1", { class: "pwt-h1" }, "Change log"))
         ),
-        h(kit.Empty, { title: "Loading…", hint: "Reading the change log." })
+        h(kit.Empty, { class: "pwt-loading", title: "Loading…", hint: "Reading the change log." })
       );
     }
     var kinds = [];
     var dedupe = {};
-    rows.forEach(function (r) {
+    (props.rows || []).forEach(function (r) {
       if (!dedupe[r.kind]) {
         dedupe[r.kind] = true;
         kinds.push(r.kind);
@@ -145,9 +147,23 @@
                   h(
                     "td",
                     { class: "pwt-log-detail" },
-                    r.kind && r.kind.indexOf("playlist.item.") === 0 && r.trackTitle
-                      ? r.trackTitle + " · " + kit.humanDetail(r)
-                      : kit.humanDetail(r)
+                    r.extra && r.extra.fromUrl && r.extra.toUrl
+                      ? h(kit.ImageChange, { from: r.extra.fromUrl, to: r.extra.toUrl, seed: r.target || r.kind })
+                      : r.kind && r.kind.indexOf("playlist.item.") === 0 && r.trackTitle
+                        ? /^spotify:track:/.test(r.uri || r.trackUri || "") && props.onOpenTrack
+                          ? h(
+                              "span",
+                              null,
+                              h(kit.TitleButton, {
+                                label: r.trackTitle,
+                                onClick: function () {
+                                  props.onOpenTrack(r.uri || r.trackUri);
+                                },
+                              }),
+                              " · " + kit.humanDetail(r)
+                            )
+                          : r.trackTitle + " · " + kit.humanDetail(r)
+                        : kit.humanDetail(r)
                   ),
                   h(
                     "td",

@@ -18,7 +18,7 @@
         "div",
         { class: "pwt-view" },
         props.loading
-          ? h(kit.Empty, { title: "Loading…", hint: "Reading the playlist from local storage." })
+          ? h(kit.Empty, { class: "pwt-loading", title: "Loading…", hint: "Reading the playlist from local storage." })
           : h(kit.Empty, { title: "Playlist not watched", hint: "Right-click a playlist and choose “Watch playlist”, or add its URL in Settings." })
       );
     }

@@ -23,6 +23,13 @@
   --sp-radius-sm: 8px;
   --sp-page: max(14px, calc((100% - 1320px) / 2));
   --font-ui: "CircularSp", "Circular", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  /* Motion tokens: one easing, a short bounded duration band, quiet loops. */
+  --pwt-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --pwt-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --pwt-dur-fast: 120ms;
+  --pwt-dur-med: 180ms;
+  --pwt-dur-slow: 220ms;
+  --pwt-sheen: rgba(30, 215, 96, 0.55);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -81,6 +88,60 @@
   height: 7px;
   border-radius: 50%;
   background: var(--sp-green);
+}
+
+/* ---------- boot splash ----------
+   The first paint, before the first load resolves (the controller holds `ready`
+   for ~180ms so this is always perceived). Centred wordmark over a thin track
+   whose green fill sweeps once — a single authored "waking up" moment, then it
+   hands off to the shell. Transform/opacity only; reduced-motion collapses the
+   sweep to a static underline and fades the wordmark in (never hides it). */
+.pwt-boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 60vh;
+  padding: 0 var(--sp-page);
+  background: var(--sp-bg);
+}
+.pwt-boot .pwt-wordmark {
+  font-size: 13px;
+  letter-spacing: 0.28em;
+  animation: pwt-boot-mark var(--pwt-dur-slow) var(--pwt-ease) both;
+}
+.pwt-boot-bar {
+  position: relative;
+  width: 132px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--sp-surface-strong);
+}
+.pwt-boot-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 45%;
+  border-radius: inherit;
+  background: var(--sp-green);
+  transform: translateX(-120%);
+  animation: pwt-boot-sweep 1.1s var(--pwt-ease) infinite;
+}
+.pwt-boot-note {
+  color: var(--sp-faint);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+@keyframes pwt-boot-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+@keyframes pwt-boot-mark {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ---------- links ---------- */
@@ -536,6 +597,9 @@ button.pwt-toggle:focus-visible {
 .pwt-track-title { font-weight: 700; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pwt-log-thumb { width: 46px; }
 .pwt-log-detail { max-width: 420px; }
+.pwt-image-change { display: inline-flex; align-items: center; gap: 6px; }
+.pwt-image-change-arrow { color: var(--sp-sub); }
+.pwt-image-change-missing { width: 26px; text-align: center; color: var(--sp-sub); }
 
 /* ---------- charts ---------- */
 .pwt-legend { display: flex; gap: 16px; margin-top: 8px; }
@@ -988,3 +1052,312 @@ button.pwt-toggle:focus-visible {
 .pwt-user-card.is-scanning { border-color: var(--sp-green-soft); }
 .pwt-scanning { display: inline-flex; align-items: center; gap: 6px; color: var(--sp-green); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .pwt-scanning::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--sp-green); }
+
+/* ---------- clickable track titles ---------- */
+.pwt-title-btn {
+  display: inline;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.pwt-title-btn:hover { color: var(--sp-green); text-decoration-color: currentColor; }
+.pwt-title-btn:focus-visible { outline: 2px solid var(--sp-green); outline-offset: 2px; }
+
+/* ---------- enlarge-image preview ---------- */
+.pwt-preview-host { display: inline-flex; }
+.pwt-preview-trigger {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: inherit;
+  cursor: zoom-in;
+}
+.pwt-preview-trigger:focus-visible { outline: 2px solid var(--sp-green); outline-offset: 2px; }
+.pwt-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+.pwt-preview-card { display: inline-flex; max-width: 100%; max-height: 100%; }
+.pwt-preview-image {
+  display: block;
+  max-width: min(90vw, 720px);
+  max-height: min(90vh, 720px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  cursor: default;
+  transform-origin: center center;
+  transition: transform 0.16s ease;
+}
+.pwt-preview-zoom {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 9600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+}
+.pwt-preview-zoom-btn,
+.pwt-preview-zoom-reset {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: 999px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pwt-preview-zoom-btn:hover:not(:disabled),
+.pwt-preview-zoom-reset:hover { background: rgba(255, 255, 255, 0.14); }
+.pwt-preview-zoom-btn:disabled { opacity: 0.35; cursor: default; }
+.pwt-preview-zoom-reset { font-size: 13px; min-width: 52px; font-variant-numeric: tabular-nums; }
+
+/* =========================================================================
+   Motion system — quiet, purposeful, Spicetify-native.
+   Only transform + opacity loops; width transition on the fill is kept for
+   value changes. No gradients, no glows. Reduced-motion turns loops into
+   short fades / static state, never into silence.
+   ========================================================================= */
+
+/* ---------- progress track sheen (seamless green sweep) ----------
+   A thin bright band that glides left→right across the track. The track
+   clips it (overflow:hidden already set). Transform-only loop. */
+.pwt-progress-track { position: relative; }
+.pwt-progress-sheen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--pwt-sheen), transparent);
+  transform: translateX(-120%);
+  animation: pwt-sweep 1.5s var(--pwt-ease) infinite;
+  pointer-events: none;
+}
+@keyframes pwt-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+/* ---------- scanning progress wrapper: sweep the whole track ----------
+   While a scan is current, the progress track gets a brighter, faster sweep
+   so the focal scan state reads at a glance. */
+.pwt-scan-progress.is-scanning .pwt-progress-sheen { animation-duration: 1.1s; }
+
+/* ---------- scanning playlist card: a soft sheen drifts across ----------
+   The active card carries a one-shot-ish sweep on a pseudo layer. It is a
+   background sweep via transform on an absolutely-positioned overlay, so
+   the card's own hover/press transforms stay intact. */
+.pwt-user-card { position: relative; overflow: hidden; }
+.pwt-scan-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--pwt-sheen), transparent);
+  transform: translateX(-130%);
+  animation: pwt-card-sweep 1.3s var(--pwt-ease) infinite;
+  opacity: 0.5;
+}
+@keyframes pwt-card-sweep {
+  0% { transform: translateX(-130%); }
+  100% { transform: translateX(130%); }
+}
+
+/* ---------- scanning dot: soft pulse ----------
+   The small green dot beside "scanning…" breathes instead of blinks. */
+.pwt-scanning::before,
+.pwt-watch-dot {
+  animation: pwt-pulse 1.4s var(--pwt-ease) infinite;
+}
+@keyframes pwt-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
+/* ---------- shared route "Loading…" placeholder ----------
+   A calm opacity/brightness pulse, not a spinner. Default state is visible
+   even if the animation never runs (opacity starts at 1). */
+.pwt-loading {
+  animation: pwt-loading-pulse 1.6s var(--pwt-ease) infinite;
+}
+@keyframes pwt-loading-pulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.5; }
+}
+
+/* ---------- immediate tactile press ----------
+   Fast transform + opacity on :active. No bouncy overshoot. */
+.pwt-btn:active,
+.pwt-chip:active,
+.pwt-link-btn:active,
+.pwt-nav-tab:active,
+.pwt-nav-btn:active,
+.pwt-select-option:active,
+.pwt-ribbon-retry:active {
+  transform: scale(0.96);
+  opacity: 0.82;
+  transition-duration: 60ms;
+}
+.pwt-select-trigger:active { transform: scale(0.98); opacity: 0.9; transition-duration: 60ms; }
+
+/* ---------- accordion body + select list: interruptible-looking open ----------
+   display:none stays for the collapsed accordion (accessibility + tab order).
+   On open, the body/list fades + slides in with the shared easing, bounded
+   120–220ms. Close snaps (display:none / unmount), which is the honest
+   behaviour and keeps focus handling intact. */
+.pwt-acc.is-open .pwt-acc-body {
+  animation: pwt-reveal var(--pwt-dur-med) var(--pwt-ease) both;
+}
+.pwt-select-list {
+  animation: pwt-reveal var(--pwt-dur-med) var(--pwt-ease) both;
+}
+@keyframes pwt-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- toast / popup / ribbon entrance ----------
+   Small, non-blocking: opacity + a short translateY. */
+.pwt-toast,
+.pwt-popup-panel,
+.pwt-popup-overlay {
+  animation: pwt-enter var(--pwt-dur-med) var(--pwt-ease) both;
+}
+.pwt-toast.pwt-toast-out { animation: pwt-exit var(--pwt-dur-fast) var(--pwt-ease-in) both; }
+.pwt-ribbon { animation: pwt-enter-ribbon var(--pwt-dur-med) var(--pwt-ease) both; }
+@keyframes pwt-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pwt-enter-ribbon {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pwt-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(6px); }
+}
+
+/* ---------- route body continuity ----------
+   One quiet entrance per navigation: the keyed body remounts on route change
+   and replays a short opacity + rise. No stagger, no scatter. */
+.pwt-route {
+  animation: pwt-route-in var(--pwt-dur-med) var(--pwt-ease) both;
+}
+@keyframes pwt-route-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- reduced motion ----------
+   Loops become a single short fade or static state; meaningful loading /
+   scanning feedback is preserved (never fully disabled). Entrances collapse
+   to a quick opacity fade. */
+@media (prefers-reduced-motion: reduce) {
+  .pwt-btn,
+  .pwt-change,
+  .pwt-user-card,
+  .pwt-chip,
+  .pwt-progress-fill,
+  .pwt-sess-row,
+  .pwt-nav-github,
+  .pwt-select-chevron,
+  .pwt-acc-chevron {
+    transition: none !important;
+  }
+  .pwt-progress-sheen,
+  .pwt-scan-sheen {
+    animation: none !important;
+    /* Static: a faint green wash on the track so scanning still reads. */
+    transform: none !important;
+    opacity: 0.18 !important;
+    width: 100% !important;
+    left: 0 !important;
+    background: var(--pwt-sheen) !important;
+  }
+  .pwt-scanning::before,
+  .pwt-watch-dot {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .pwt-loading {
+    animation: pwt-loading-fade 1.2s ease-in-out 1 both;
+  }
+  /* Boot splash: keep the wordmark perceptible (fade in), collapse the looping
+     sweep to a static green underline — never hide the splash. */
+  .pwt-boot .pwt-wordmark {
+    animation: pwt-loading-fade 0.2s ease both;
+  }
+  .pwt-boot-bar-fill {
+    animation: none !important;
+    transform: none !important;
+    width: 100% !important;
+    left: 0 !important;
+    opacity: 0.5 !important;
+  }
+  .pwt-acc.is-open .pwt-acc-body,
+  .pwt-select-list,
+  .pwt-toast,
+  .pwt-popup-panel,
+  .pwt-popup-overlay,
+  .pwt-ribbon,
+  .pwt-route {
+    animation: pwt-loading-fade 0.14s ease both;
+  }
+  .pwt-btn:active,
+  .pwt-chip:active,
+  .pwt-link-btn:active,
+  .pwt-nav-tab:active,
+  .pwt-nav-btn:active,
+  .pwt-select-option:active,
+  .pwt-ribbon-retry:active,
+  .pwt-select-trigger:active {
+    transform: none !important;
+    opacity: 0.7 !important;
+  }
+  @keyframes pwt-loading-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}

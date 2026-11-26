@@ -109,7 +109,7 @@ test("a change row carries its own track title, not a bare id", () => {
   assert.equal(kit.humanDetail({ kind: "playlist.item.removed", detail: "0000000000000000000009" }), "removed");
 });
 
-test("humanDetail shows before → after for a rename, and never for an image", () => {
+test("humanDetail shows before → after for renames, never for images", () => {
   const kit = require("../src/pwt/ui/kit.js");
   // A real rename carries both values.
   assert.equal(
@@ -125,7 +125,7 @@ test("humanDetail shows before → after for a rename, and never for an image", 
     kit.humanDetail({ kind: "profile.name.changed", extra: { to: "Robert" } }),
     "now called “Robert”"
   );
-  // Images never print a before/after pair.
+  // Images keep readable text; preview rendering consumes the URLs separately.
   assert.equal(kit.humanDetail({ kind: "profile.avatar.changed", extra: { from: "h1", to: "h2" } }), "new picture");
   assert.equal(kit.humanDetail({ kind: "profile.playlist.cover.changed", extra: { from: "c1", to: "c2" } }), "new cover");
   // Followers keep their from → to form.
@@ -163,29 +163,158 @@ test("evaluate stores the title in detail, never a track id", () => {
   assert.equal(second.detail, "", "an unknown track carries nothing rather than an id");
 });
 
-test("evaluate logs a cover change with no before/after hash", () => {
+test("evaluate logs a genuine cover change with before/after", () => {
+  // A real artwork edit IS an observable change and is logged. The event
+  // carries the old and new URLs so the row can preview them side by side.
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const Sources = require("../src/pwt/core/sources.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff, sources: Sources });
+
+  const out = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverUrl: "https://i.scdn.co/image/oldcover", coverHash: "oldcover", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: "https://i.scdn.co/image/newcover", coverHash: "newcover" },
+    Date.now(),
+    {}
+  );
+  const covers = out.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers.length, 1, "a genuine cover change IS logged");
+  assert.equal(covers[0].extra.fromUrl, "https://i.scdn.co/image/oldcover", "the old cover is kept for preview");
+  assert.equal(covers[0].extra.toUrl, "https://i.scdn.co/image/newcover", "the new cover is kept for preview");
+  // The cover is still tracked: the new URL/hash are written to the row.
+  assert.equal(out.playlist.coverUrl, "https://i.scdn.co/image/newcover", "the new cover URL is still stored on the row");
+  assert.equal(out.playlist.coverHash, "newcover", "the new cover hash is still stored on the row");
+});
+
+test("evaluate does NOT log a cover change when only the resolution flipped", () => {
+  // Spotify serves the SAME image at several sizes under different URLs
+  // (.../ab67616d0000b273… 64px vs .../ab67616d0000d4c2… 640px). `bestCover`
+  // can switch sizes between scans; the size-independent id makes them equal,
+  // so the "cover changed" that used to fire for an unchanged image does not.
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const Sources = require("../src/pwt/core/sources.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff, sources: Sources });
+
+  const out = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverUrl: "https://i.scdn.co/image/ab67616d0000b273AAAAAA", coverHash: "ab67616d0000b273AAAAAA", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: "https://i.scdn.co/image/ab67616d0000d4c2AAAAAA", coverHash: "ab67616d0000d4c2AAAAAA" },
+    Date.now(),
+    {}
+  );
+  const covers = out.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers.length, 0, "a resolution flip is NOT a cover change");
+  // The new (higher-res) URL is still stored on the row.
+  assert.equal(out.playlist.coverUrl, "https://i.scdn.co/image/ab67616d0000d4c2AAAAAA", "the resolved cover URL is stored");
+});
+
+test("evaluate does NOT log a cover change on a mosaic↔single shape switch", () => {
+  // A mosaic ref and a single URL are different source routes for artwork, not
+  // an edit. Even with sources loaded, a shape transition must not emit a
+  // phantom "cover changed"; only a genuine edit within the same shape does.
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const Sources = require("../src/pwt/core/sources.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff, sources: Sources });
+
+  const MOSAIC = "spotify:mosaic:aaaa1111:bbbb2222";
+  const SINGLE = "https://i.scdn.co/image/ab67616d0000b273AAAAAA";
+
+  // Stored mosaic, meta delivers a single image (route switched).
+  const fromMosaic = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverUrl: MOSAIC, coverHash: "", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: SINGLE, coverHash: "ab67616d0000b273AAAAAA" },
+    Date.now(),
+    {}
+  );
+  const covers1 = fromMosaic.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers1.length, 0, "mosaic → single is NOT a cover change");
+
+  // And the reverse: stored single, meta delivers a mosaic.
+  const fromSingle = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverUrl: SINGLE, coverHash: "ab67616d0000b273AAAAAA", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: MOSAIC, coverHash: "" },
+    Date.now(),
+    {}
+  );
+  const covers2 = fromSingle.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers2.length, 0, "single → mosaic is NOT a cover change");
+});
+
+test("evaluate does NOT log a cover change on a first fill (no prior cover)", () => {
+  // A brand-new row has no previous artwork; filling it in is not a change.
+  const Playlists = require("../src/pwt/core/playlists.js");
+  const Sources = require("../src/pwt/core/sources.js");
+  const U = require("../src/pwt/util/util.js");
+  const Events = require("../src/pwt/events.js");
+  const Diff = require("../src/pwt/diff.js");
+  globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff, sources: Sources });
+
+  const out = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverUrl: "", coverHash: "", uris: [], source: "client", total: 0 },
+    { uris: [], source: "client", total: 0 },
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: "https://i.scdn.co/image/ab67616d0000b273AAAAAA", coverHash: "ab67616d0000b273AAAAAA" },
+    Date.now(),
+    {}
+  );
+  const covers = out.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers.length, 0, "a first fill is not a change");
+  assert.equal(out.playlist.coverUrl, "https://i.scdn.co/image/ab67616d0000b273AAAAAA", "the first cover is stored");
+});
+
+test("a scan that only catches up a cover hash still logs no cover change", () => {
+  // The cover hash is a pure function of the cover URL; a metadata source that
+  // supplies a coverUrl without a hash (embed / pathfinder) used to leave the
+  // stored hash stale, and the next scan logged "cover changed" against it. No
+  // cover event is emitted now, and the stored hash still tracks the URL.
   const Playlists = require("../src/pwt/core/playlists.js");
   const U = require("../src/pwt/util/util.js");
   const Events = require("../src/pwt/events.js");
   const Diff = require("../src/pwt/diff.js");
   globalThis.PWT = Object.assign(globalThis.PWT || {}, { util: U, events: Events, diff: Diff });
 
-  const out = Playlists.evaluate(
-    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverHash: "cover-old", uris: [], source: "client", total: 0 },
+  const URL = "https://i.scdn.co/image/ab67616d0000b273samecover";
+  const HASH = "ab67616d0000b273samecover"; // coverHashOf = the URL's last path segment
+  const now = Date.now();
+
+  // Scan 1: meta carries the URL but no hash (the embed/pathfinder shape).
+  const first = Playlists.evaluate(
+    { id: "37i9dQZF1DXcBWIGoYBM5M", name: "P", coverHash: "", coverUrl: "", uris: [], source: "client", total: 0 },
     { uris: [], source: "client", total: 0 },
     { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
-    { name: "P", coverHash: "cover-new", coverUrl: "https://i.scdn.co/new" },
-    Date.now(),
+    { name: "P", coverUrl: URL },
+    now,
     {}
   );
-  const covers = out.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
-  assert.equal(covers.length, 1, "the cover change is logged");
-  // A cover is an image: no before/after hash pair in the detail.
-  assert.ok(covers[0].detail.indexOf("cover-old") < 0, "no before hash in the detail: " + covers[0].detail);
-  assert.ok(covers[0].detail.indexOf("cover-new") < 0, "no after hash in the detail: " + covers[0].detail);
-  // The structured before/after still rides in extra for the export.
-  assert.equal(covers[0].extra.from, "cover-old");
-  assert.equal(covers[0].extra.to, "cover-new");
+  assert.equal(first.playlist.coverUrl, URL, "the cover URL is stored");
+  assert.equal(first.playlist.coverHash, HASH, "the hash is derived from the stored URL, not left stale");
+
+  // Scan 2: meta now carries a (consistent) hash for the SAME URL.
+  const second = Playlists.evaluate(
+    first.playlist,
+    first.snapshot,
+    { uris: [], added: {}, tracks: {}, total: 0, source: "client", capped: false },
+    { name: "P", coverUrl: URL, coverHash: HASH },
+    now + 1000,
+    {}
+  );
+  const covers = second.events.filter(function (e) { return e.kind === "profile.playlist.cover.changed"; });
+  assert.equal(covers.length, 0, "no cover event, even when the hash only now caught up");
 });
 
 test("evaluate still logs a name change as before → after", () => {

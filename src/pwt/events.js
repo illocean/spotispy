@@ -25,7 +25,6 @@
       "profile.playlist.added",
       "profile.playlist.removed",
       "profile.playlist.renamed",
-      "profile.playlist.cover.changed",
       "profile.playlist.visibility.changed",
       "profile.followers.count",
       "profile.follower.appear",

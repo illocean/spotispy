@@ -119,8 +119,7 @@
       case "profile.name.changed":
       case "profile.playlist.renamed":
         // A real change shows before → after. A first observation has no stored
-        // "from", so it just names the new value. Image changes (avatar/cover)
-        // have their own cases and never print before/after.
+        // "from", so it just names the new value.
         if (from != null && from !== "") return String(from) + " → " + String(to == null ? "" : to);
         return to ? "now called “" + to + "”" : "name changed";
       case "profile.avatar.changed":
@@ -176,6 +175,19 @@
     );
   }
 
+  function ImageChange(props) {
+    var h = root.PWT.react.h;
+    var from = props.from || "";
+    var to = props.to || "";
+    if (!from && !to) return null;
+    var seed = props.seed || "image";
+    var before = from ? h(Thumb, { src: from, small: true, alt: "before", seed: seed + "-before" }) : h("span", { class: "pwt-image-change-missing" }, "—");
+    if (!to) return h("span", { class: "pwt-image-change" }, before);
+    var arrow = h("span", { class: "pwt-image-change-arrow", "aria-hidden": "true" }, "→");
+    var after = h(Thumb, { src: to, small: true, alt: "after", seed: seed + "-after" });
+    return h("span", { class: "pwt-image-change" }, before, arrow, after);
+  }
+
   function Badge(props) {
     var tone = props.tone || "neutral";
     return h("span", { class: "pwt-badge pwt-badge-" + tone, title: props.title || props.tone }, props.children);
@@ -208,6 +220,83 @@
     return 'url("' + String(url).replace(/\\/g, "/").replace(/"/g, "%22") + '")';
   }
 
+  /** A track title that opens Spotify by URI, never plays. */
+  function TitleButton(props) {
+    return h("button", { type: "button", class: "pwt-title-btn", onClick: props.onClick || function () {}, title: props.title || undefined }, props.label != null ? props.label : props.children);
+  }
+
+  /**
+   * One enlarged-image overlay. Clicking the backdrop or pressing Escape closes it.
+   * Rendered into document.body through a portal so no app-container transform or
+   * overflow can clip it, and the enlarged picture is a real <img> (native
+   * loading) resolved from the same ref the thumbnail used.
+   */
+  function ImgPreview(props) {
+    var hook = root.PWT.react.hooks();
+    var h = root.PWT.react.h;
+    var util = root.PWT.util;
+    var ref = props.img && props.img.src;
+    var url = "";
+    if (util && util.mosaicTiles) {
+      var tiles = util.mosaicTiles(ref);
+      if (tiles && tiles.length) url = util.imageUrl ? util.imageUrl(tiles[0]) || tiles[0] : tiles[0];
+    }
+    if (!url && util && util.imageUrl) {
+      // imageUrl() passes https:// through and resolves spotify:image:, but returns a
+      // spotify:mosaic: ref unchanged (a plain <img> can't hold a 2x2). Only
+      // trust a loadable http(s) url here; otherwise fall through to the tile.
+      var resolved = util.imageUrl(ref) || "";
+      if (/^https?:\/\//i.test(resolved)) url = resolved;
+    }
+    // Zoom: 1 = fit-to-viewport (the image's natural capped size). Bounded so
+    // the picture can be inspected but never lost off-screen. The scale applies to
+    // the picture only, so the controls and backdrop stay put.
+    var zoomState = hook.useState(1);
+    var zoom = typeof zoomState[0] === "number" ? zoomState[0] : 1;
+    var setZoom = zoomState[1] || function () {};
+    var ZOOM_MIN = 1;
+    var ZOOM_MAX = 4;
+    var ZOOM_STEP = 0.5;
+    function bump(delta) { setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom + delta))); }
+    function resetZoom() { setZoom(1); }
+    hook.useEffect(
+      function () {
+        var doc = typeof document !== "undefined" ? document : null;
+        if (!doc || typeof doc.addEventListener !== "function") return undefined;
+        function onKey(ev) { if (ev && ev.key === "Escape") props.onClose(); }
+        doc.addEventListener("keydown", onKey);
+        return function () { doc.removeEventListener("keydown", onKey); };
+      },
+      []
+    );
+    var picture = url
+      ? h("img", { class: "pwt-preview-image", src: url, alt: (props.img && props.img.alt) || "", draggable: false, style: { transform: "scale(" + zoom + ")" } })
+      : h(Img, Object.assign({}, props.img, { noPreview: true, class: "pwt-preview-image", style: { width: "min(90vw, 720px)", height: "min(90vh, 720px)", transform: "scale(" + zoom + ")" } }));
+    var controls = h(
+      "div",
+      { class: "pwt-preview-zoom", onClick: function (ev) { ev.stopPropagation(); } },
+      h("button", { type: "button", class: "pwt-preview-zoom-btn", "aria-label": "Zoom out", title: "Zoom out", onClick: function () { bump(-ZOOM_STEP); }, disabled: zoom <= ZOOM_MIN }, "−"),
+      h("button", { type: "button", class: "pwt-preview-zoom-reset", "aria-label": "Reset zoom", title: "Reset zoom", onClick: resetZoom }, Math.round(zoom * 100) + "%"),
+      h("button", { type: "button", class: "pwt-preview-zoom-btn", "aria-label": "Zoom in", title: "Zoom in", onClick: function () { bump(ZOOM_STEP); }, disabled: zoom >= ZOOM_MAX }, "+")
+    );
+    var overlay = h(
+      "div",
+      { class: "pwt-preview-overlay", role: "presentation", onClick: props.onClose },
+      h(
+        "div",
+        { class: "pwt-preview-card", onClick: function (ev) { ev.stopPropagation(); } },
+        picture
+      ),
+      // Zoom controls live outside the scaled card and are fixed to the bottom edge
+      // of the viewport, so an enlarged (scale(4)) picture can never cover them.
+      controls
+    );
+    var D = root.PWT.react.dom && root.PWT.react.dom();
+    var doc = typeof document !== "undefined" ? document : null;
+    if (D && D.createPortal && doc && doc.body) return D.createPortal(overlay, doc.body);
+    return overlay;
+  }
+
   /**
    * An image tile that cannot break: the photo is one background layer and the
    * deterministic gradient sits underneath, so a failed or slow image shows a
@@ -215,6 +304,34 @@
    * 2x2 of tiles — composited here as four 50% layers, the exact cover.
    */
   function Img(props) {
+    var hook = root.PWT.react.hooks();
+    var openState = hook.useState(false);
+    var open = !!openState[0];
+    var setOpen = openState[1] || function () {};
+    if (!props.noPreview && props.src) {
+      return h(
+        "span",
+        { class: "pwt-preview-host" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "pwt-preview-trigger",
+            "data-pwt": props["data-pwt"],
+            title: props.title || props.alt || "Enlarge image",
+            "aria-label": "Enlarge image",
+            onClick: function () { setOpen(true); },
+          },
+          ImgTile(props)
+        ),
+        open ? h(ImgPreview, { img: props, onClose: function () { setOpen(false); } }) : null
+      );
+    }
+    return ImgTile(props);
+  }
+
+  /** The unchanged image tile rendering, shared by Img and the preview overlay. */
+  function ImgTile(props) {
     var h = root.PWT.react.h;
     // Spotify hands back spotify:image:/spotify:mosaic: refs on current builds;
     // resolve them here so no surface can fall back to a gradient for artwork
@@ -322,7 +439,7 @@
   function Empty(props) {
     return h(
       "div",
-      { class: "pwt-empty" },
+      { class: "pwt-empty" + (props.class ? " " + props.class : "") },
       h("div", { class: "pwt-empty-title" }, props.title || "Nothing here yet"),
       props.hint ? h("div", { class: "pwt-empty-hint" }, props.hint) : null,
       props.action || null
@@ -352,12 +469,23 @@
     return h("span", { class: "pwt-health pwt-health-" + m[1], title: props.title || m[0] }, m[0]);
   }
 
+  /** Route-level "Loading…" placeholder. Shared quiet pulse; copy unchanged. */
+  function Loading(props) {
+    var label = (props && props.label) || "Loading…";
+    return h("div", { class: "pwt-loading" }, label);
+  }
+
   function Progress(props) {
     var pct = props.total ? Math.min(100, Math.round((props.done / props.total) * 100)) : 0;
     return h(
       "span",
       { class: "pwt-progress", title: props.done + "/" + props.total },
-      h("span", { class: "pwt-progress-track" }, h("span", { class: "pwt-progress-fill", style: { width: pct + "%" } })),
+      h(
+        "span",
+        { class: "pwt-progress-track" },
+        h("span", { class: "pwt-progress-fill", style: { width: pct + "%" } }),
+        h("span", { class: "pwt-progress-sheen", "aria-hidden": "true" })
+      ),
       h("span", { class: "pwt-progress-text" }, props.done + "/" + props.total + (props.suffix ? " · " + props.suffix : ""))
     );
   }
@@ -383,7 +511,20 @@
     // know it, rides along in the detail line so the row never flips shape.
     var title = secondary;
     var detail = humanDetail(row);
-    if (isItem && row.trackTitle) detail = row.trackTitle + " · " + detail;
+    var detailNode = detail;
+    if (isItem && row.trackTitle) {
+      var uri = row.uri || row.trackUri || props.linkUri || "";
+      if (/^spotify:track:/.test(uri) && props.onOpen) {
+        detailNode = h(
+          "span",
+          null,
+          h(TitleButton, { label: row.trackTitle, onClick: function () { props.onOpen(uri); } }),
+          " · " + detail
+        );
+      } else {
+        detailNode = row.trackTitle + " · " + detail;
+      }
+    }
     var iconTone =
       row.kind === "playlist.item.added" || row.kind === "profile.playlist.added"
         ? " pwt-change-icon-add"
@@ -400,7 +541,7 @@
         "span",
         { class: "pwt-change-main" },
         h("span", { class: "pwt-change-title" }, title),
-        h("span", { class: "pwt-change-detail" }, detail)
+        h("span", { class: "pwt-change-detail" }, detailNode)
       ),
       h(
         "span",
@@ -613,8 +754,12 @@
     Cover: Cover,
     Img: Img,
     Thumb: Thumb,
+    ImageChange: ImageChange,
+    TitleButton: TitleButton,
+    ImgPreview: ImgPreview,
     Stat: Stat,
     Empty: Empty,
+    Loading: Loading,
     Section: Section,
     Health: Health,
     Progress: Progress,

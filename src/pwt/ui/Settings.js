@@ -17,7 +17,7 @@
       activityLabel: "5 s",
       activityBoostMs: 2000,
       toggles: [],
-      retainDays: 90,
+      retainDays: 7,
       logCap: 10000,
       os: { supported: false, state: "unknown" },
       cacheBytes: 0,
@@ -117,7 +117,7 @@
           { class: "pwt-view-head" },
           h("div", { class: "pwt-hero-brand" }, h("span", { class: "pwt-wordmark" }, "knob"), h("h1", { class: "pwt-h1" }, "Settings"))
         ),
-        h(kit.Empty, { title: "Loading…", hint: "Reading your settings." })
+        h(kit.Empty, { class: "pwt-loading", title: "Loading…", hint: "Reading your settings." })
       );
     }
 
@@ -273,7 +273,7 @@
             h(kit.Select, {
               "data-pwt": "retain-days",
               value: retainDays,
-              options: [0, 30, 90, 180, 365].map(function (d) {
+              options: [0, 7, 30, 90, 180, 365].map(function (d) {
                 return { value: d, label: d ? d + " days" : "keep forever" };
               }),
               onChange: function (value) {
